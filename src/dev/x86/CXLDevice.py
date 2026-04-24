@@ -87,6 +87,33 @@ class CXLType1Accel(PciDevice):
         self.lsu_num = lsu_num
         self.load_store = load_store
 
+
+class CXLType1RAOAccel(PciDevice):
+    type = 'CXLType1RAOAccel'
+    cxx_header = "dev/x86/cxl_type1_rao_accel.hh"
+    cxx_class = 'gem5::CXLType1RAOAccel'
+    dcache_port = RequestPort("Data Port")
+    icache_port = RequestPort("Instr Port")
+    cacheline_size = Param.Int(64, "Device cache line size")
+    max_ops = Param.Int(4096, "Maximum number of trace entries")
+
+    VendorID = 0x8086
+    DeviceID = 0x7890
+    Command = 0x0
+    Status = 0x280
+    Revision = 0x0
+    ClassCode = 0x05
+    SubClassCode = 0x00
+    ProgIF = 0x00
+    InterruptLine = 0x1f
+    InterruptPin = 0x01
+
+    BAR0 = PciMemBar(size='4MiB')
+    BAR1 = PciMemUpperBar()
+
+    def connectCachedPorts(self, in_ports):
+        self.dcache_port = in_ports
+
 class CXLType2Accel(PciDevice):
     type = 'CXLType2Accel'
     cxx_header = "dev/x86/cxl_type2_accel.hh"
