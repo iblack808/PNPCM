@@ -1,7 +1,7 @@
-#ifndef __DEV_X86_CXL_TYPE1_RAO_ACCEL_HH__
-#define __DEV_X86_CXL_TYPE1_RAO_ACCEL_HH__
+#ifndef __DEV_X86_PCIE_RAO_DMA_ACCEL_HH__
+#define __DEV_X86_PCIE_RAO_DMA_ACCEL_HH__
 
-#include <deque>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -12,12 +12,12 @@
 #include "dev/pci/device.hh"
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
-#include "params/CXLType1RAOAccel.hh"
+#include "params/PCIeRAODMAAccel.hh"
 
 namespace gem5
 {
 
-class CXLType1RAOAccel : public PciDevice
+class PCIeRAODMAAccel : public PciDevice
 {
   private:
     enum RegisterOffset : Addr
@@ -110,23 +110,55 @@ class CXLType1RAOAccel : public PciDevice
         Tick write_issue_tick = 0;
     };
 
+    class DmaReadEngine : public DmaReadFifo
+    {
+      public:
+        DmaReadEngine(PCIeRAODMAAccel *device, size_t size,
+                      unsigned max_req_size, unsigned max_pending)
+            : DmaReadFifo(device->dmaPort, size, max_req_size, max_pending),
+              device(device)
+        {}
+
+      protected:
+        void onIdle() override;
+
+      private:
+        PCIeRAODMAAccel *device;
+    };
+
+    class DmaWriteEngine : public DmaWriteFifo
+    {
+      public:
+        DmaWriteEngine(PCIeRAODMAAccel *device, size_t size,
+                       unsigned max_req_size, unsigned max_pending)
+            : DmaWriteFifo(device->dmaPort, size, max_req_size, max_pending),
+              device(device)
+        {}
+
+      protected:
+        void onIdle() override;
+
+      private:
+        PCIeRAODMAAccel *device;
+    };
+
     class TimingDevicePort : public RequestPort
     {
       public:
-        TimingDevicePort(const std::string &name, CXLType1RAOAccel *device)
+        TimingDevicePort(const std::string &name, PCIeRAODMAAccel *device)
             : RequestPort(name), device(device),
               retryRespEvent([this] { sendRetryResp(); }, name)
         {}
 
       protected:
-        CXLType1RAOAccel *device;
+        PCIeRAODMAAccel *device;
         EventFunctionWrapper retryRespEvent;
     };
 
     class DcachePort : public TimingDevicePort
     {
       public:
-        explicit DcachePort(CXLType1RAOAccel *device)
+        explicit DcachePort(PCIeRAODMAAccel *device)
             : TimingDevicePort(device->name() + ".dcache_port", device)
         {}
 
@@ -140,7 +172,7 @@ class CXLType1RAOAccel : public PciDevice
     class IcachePort : public TimingDevicePort
     {
       public:
-        explicit IcachePort(CXLType1RAOAccel *device)
+        explicit IcachePort(PCIeRAODMAAccel *device)
             : TimingDevicePort(device->name() + ".icache_port", device)
         {}
 
@@ -149,24 +181,18 @@ class CXLType1RAOAccel : public PciDevice
         void recvReqRetry() override;
     };
 
-    class TraceSenderState : public Packet::SenderState
-    {
-      public:
-        explicit TraceSenderState(size_t trace_index, bool read_pkt)
-            : index(trace_index), is_read(read_pkt)
-        {}
-
-        size_t index;
-        bool is_read;
-    };
-
     const unsigned int cacheLineSize;
     const unsigned int maxOps;
+    const unsigned int fifoSize;
+    const unsigned int maxReqSize;
+    const unsigned int maxPending;
     const Tick computeLatency;
 
     DcachePort dcachePort;
     IcachePort icachePort;
-    PacketPtr dcache_pkt;
+    uint8_t dmaBuffer[sizeof(uint64_t)];
+    std::unique_ptr<DmaReadEngine> dmaReadEngine;
+    std::unique_ptr<DmaWriteEngine> dmaWriteEngine;
 
     std::vector<TraceEntry> traceEntries;
     std::unordered_map<uint64_t, uint64_t> resultTable;
@@ -189,23 +215,18 @@ class CXLType1RAOAccel : public PciDevice
     void issueRead(size_t trace_index);
     void issueWrite(size_t trace_index, uint64_t value);
     void finishCompute();
-    void recvData(PacketPtr pkt);
-    void handleReadResponse(size_t trace_index, PacketPtr pkt);
+    void completeDmaRead();
+    void completeDmaWrite();
+    void handleReadResponse(size_t trace_index);
     void handleWriteResponse(size_t trace_index);
     uint64_t resolveOperand(const TraceEntry &entry) const;
     bool traceReady() const;
     void finishExecution();
     Addr barOffset(Addr addr) const;
 
-    PacketPtr buildPacket(const RequestPtr &req, bool read);
-    void sendData(const RequestPtr &req, uint8_t *data, bool read,
-                  size_t trace_index);
-    bool handleReadPacket(PacketPtr pkt);
-    bool handleWritePacket();
-
     struct RAOStats : public statistics::Group
     {
-        explicit RAOStats(CXLType1RAOAccel &device);
+        explicit RAOStats(PCIeRAODMAAccel &device);
 
         statistics::Scalar numFetch;
         statistics::Scalar numFetchAdd;
@@ -227,8 +248,8 @@ class CXLType1RAOAccel : public PciDevice
     RAOStats stats;
 
   public:
-    using Params = CXLType1RAOAccelParams;
-    explicit CXLType1RAOAccel(const Params &p);
+    using Params = PCIeRAODMAAccelParams;
+    explicit PCIeRAODMAAccel(const Params &p);
 
     Port &getPort(const std::string &if_name,
                   PortID idx = InvalidPortID) override;
@@ -239,4 +260,4 @@ class CXLType1RAOAccel : public PciDevice
 
 } // namespace gem5
 
-#endif // __DEV_X86_CXL_TYPE1_RAO_ACCEL_HH__
+#endif // __DEV_X86_PCIE_RAO_DMA_ACCEL_HH__

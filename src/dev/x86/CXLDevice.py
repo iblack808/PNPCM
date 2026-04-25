@@ -96,6 +96,9 @@ class CXLType1RAOAccel(PciDevice):
     icache_port = RequestPort("Instr Port")
     cacheline_size = Param.Int(64, "Device cache line size")
     max_ops = Param.Int(4096, "Maximum number of trace entries")
+    compute_latency = Param.Latency(
+        "15ns", "Compute/control latency before a mutating RAO write"
+    )
 
     VendorID = 0x8086
     DeviceID = 0x7890

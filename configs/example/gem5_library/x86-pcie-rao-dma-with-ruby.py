@@ -1,9 +1,9 @@
 """
-Run a CXL Type-1 RAO accelerator with the Ruby CXL MESI protocol.
+Run a PCIe RAO DMA accelerator with the Ruby CXL MESI protocol.
 """
 
 from gem5.coherence_protocol import CoherenceProtocol
-from gem5.components.boards.x86_board_cxl_type1_rao import X86BoardCXLType1RAO
+from gem5.components.boards.x86_board_pcie_rao_dma import X86BoardPCIeRAODMA
 from gem5.components.cachehierarchies.ruby.cxl_mesi_two_level_cache_hierarchy import (
     CXLMESITwoLevelCacheHierarchy,
 )
@@ -46,7 +46,7 @@ processor = SimpleSwitchableProcessor(
 for proc in processor.start:
     proc.core.usePerf = False
 
-board = X86BoardCXLType1RAO(
+board = X86BoardPCIeRAODMA(
     clk_freq="2.4GHz",
     processor=processor,
     memory=memory,

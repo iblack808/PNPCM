@@ -33,7 +33,8 @@ from m5.objects import MessageBuffer
 class DMAController(AbstractDMAController):
     def __init__(self, network, cache_line_size):
         super().__init__(network, cache_line_size)
-        self.request_latency = 500 # DMA setup time (amortized as transfer size increases)
+        # Tuned PCIe DMA latency for one 64B RAO transfer.
+        self.request_latency = 1872
 
     @overrides(AbstractDMAController)
     def connectQueues(self, network):

@@ -1,13 +1,13 @@
-#include "dev/x86/cxl_type1_rao_accel.hh"
+#include "dev/x86/pcie_rao_dma_accel.hh"
 
 #include <cstring>
 
-#include "debug/CXLType1RAOAccel.hh"
+#include "debug/PCIeRAODMAAccel.hh"
 
 namespace gem5
 {
 
-CXLType1RAOAccel::RAOStats::RAOStats(CXLType1RAOAccel &device)
+PCIeRAODMAAccel::RAOStats::RAOStats(PCIeRAODMAAccel &device)
     : statistics::Group(&device),
       ADD_STAT(numFetch, statistics::units::Count::get(),
                "Number of FETCH operations"),
@@ -16,13 +16,13 @@ CXLType1RAOAccel::RAOStats::RAOStats(CXLType1RAOAccel &device)
       ADD_STAT(numAdd, statistics::units::Count::get(),
                "Number of ADD operations"),
       ADD_STAT(numReads, statistics::units::Count::get(),
-               "Number of read requests issued by RAO"),
+               "Number of DMA read requests issued by RAO"),
       ADD_STAT(numWrites, statistics::units::Count::get(),
-               "Number of write requests issued by RAO"),
+               "Number of DMA write requests issued by RAO"),
       ADD_STAT(numTotalOps, statistics::units::Count::get(),
                "Number of completed RAO operations"),
       ADD_STAT(totalExecTicks, statistics::units::Tick::get(),
-               "Total RAO execution ticks"),
+               "Total RAO DMA execution ticks"),
       ADD_STAT(totalReadLatency, statistics::units::Tick::get(),
                "Accumulated read request service latency"),
       ADD_STAT(totalWriteLatency, statistics::units::Tick::get(),
@@ -54,14 +54,16 @@ CXLType1RAOAccel::RAOStats::RAOStats(CXLType1RAOAccel &device)
     avgOpLatency = totalOpLatency / numTotalOps;
 }
 
-CXLType1RAOAccel::CXLType1RAOAccel(const Params &p)
+PCIeRAODMAAccel::PCIeRAODMAAccel(const Params &p)
     : PciDevice(p),
       cacheLineSize(p.cacheline_size),
       maxOps(p.max_ops),
+      fifoSize(p.fifo_size),
+      maxReqSize(p.max_req_size),
+      maxPending(p.max_pending),
       computeLatency(p.compute_latency),
       dcachePort(this),
       icachePort(this),
-      dcache_pkt(nullptr),
       ctrlReg(0),
       statusReg(0),
       completedOps(0),
@@ -73,11 +75,16 @@ CXLType1RAOAccel::CXLType1RAOAccel(const Params &p)
       stats(*this)
 {
     traceEntries.reserve(maxOps);
+    dmaReadEngine = std::make_unique<DmaReadEngine>(
+        this, fifoSize, maxReqSize, maxPending);
+    dmaWriteEngine = std::make_unique<DmaWriteEngine>(
+        this, fifoSize, maxReqSize, maxPending);
+    std::memset(dmaBuffer, 0, sizeof(dmaBuffer));
     resetState();
 }
 
 void
-CXLType1RAOAccel::resetState()
+PCIeRAODMAAccel::resetState()
 {
     ctrlReg = 0;
     statusReg = 0;
@@ -85,7 +92,7 @@ CXLType1RAOAccel::resetState()
     errorCode = 0;
     firstIssueTick = 0;
     finishTick = 0;
-    dcache_pkt = nullptr;
+    std::memset(dmaBuffer, 0, sizeof(dmaBuffer));
     traceEntries.clear();
     resultTable.clear();
     stagingEntry = StagingEntry();
@@ -93,14 +100,14 @@ CXLType1RAOAccel::resetState()
 }
 
 Addr
-CXLType1RAOAccel::barOffset(Addr addr) const
+PCIeRAODMAAccel::barOffset(Addr addr) const
 {
     assert(BARs[0]);
     return addr - BARs[0]->addr();
 }
 
 Port &
-CXLType1RAOAccel::getPort(const std::string &if_name, PortID idx)
+PCIeRAODMAAccel::getPort(const std::string &if_name, PortID idx)
 {
     if (if_name == "dma") {
         return dmaPort;
@@ -113,13 +120,13 @@ CXLType1RAOAccel::getPort(const std::string &if_name, PortID idx)
 }
 
 AddrRangeList
-CXLType1RAOAccel::getAddrRanges() const
+PCIeRAODMAAccel::getAddrRanges() const
 {
     return PciDevice::getAddrRanges();
 }
 
 Tick
-CXLType1RAOAccel::read(PacketPtr pkt)
+PCIeRAODMAAccel::read(PacketPtr pkt)
 {
     const Addr offset = barOffset(pkt->getAddr());
     uint64_t value = 0;
@@ -176,7 +183,7 @@ CXLType1RAOAccel::read(PacketPtr pkt)
 }
 
 Tick
-CXLType1RAOAccel::write(PacketPtr pkt)
+PCIeRAODMAAccel::write(PacketPtr pkt)
 {
     const Addr offset = barOffset(pkt->getAddr());
     const uint64_t value = pkt->getUintX(ByteOrder::little);
@@ -241,13 +248,13 @@ CXLType1RAOAccel::write(PacketPtr pkt)
 }
 
 bool
-CXLType1RAOAccel::traceReady() const
+PCIeRAODMAAccel::traceReady() const
 {
     return !traceEntries.empty() && errorCode == 0;
 }
 
 void
-CXLType1RAOAccel::startExecution()
+PCIeRAODMAAccel::startExecution()
 {
     if (!traceReady() || (statusReg & STATUS_BUSY)) {
         if (!traceReady()) {
@@ -269,7 +276,7 @@ CXLType1RAOAccel::startExecution()
 }
 
 void
-CXLType1RAOAccel::finishExecution()
+PCIeRAODMAAccel::finishExecution()
 {
     statusReg &= ~STATUS_BUSY;
     statusReg |= STATUS_DONE;
@@ -280,7 +287,7 @@ CXLType1RAOAccel::finishExecution()
 }
 
 void
-CXLType1RAOAccel::issueNext()
+PCIeRAODMAAccel::issueNext()
 {
     if (!(statusReg & STATUS_BUSY)) {
         return;
@@ -307,31 +314,29 @@ CXLType1RAOAccel::issueNext()
 }
 
 void
-CXLType1RAOAccel::issueRead(size_t trace_index)
+PCIeRAODMAAccel::issueRead(size_t trace_index)
 {
     const TraceEntry &entry = traceEntries.at(trace_index);
     activeContext.read_issue_tick = clockEdge();
-    auto req = std::make_shared<Request>(entry.paddr, sizeof(uint64_t), 0, 0);
-    auto *data = new uint8_t[sizeof(uint64_t)];
-    std::memset(data, 0, sizeof(uint64_t));
-    sendData(req, data, true, trace_index);
+    std::memset(dmaBuffer, 0, sizeof(dmaBuffer));
+    dmaReadEngine->startFill(entry.paddr, sizeof(uint64_t));
     stats.numReads++;
 }
 
 void
-CXLType1RAOAccel::issueWrite(size_t trace_index, uint64_t value)
+PCIeRAODMAAccel::issueWrite(size_t trace_index, uint64_t value)
 {
     activeContext.write_issue_tick = clockEdge();
+    traceEntries.at(trace_index);
+    std::memcpy(dmaBuffer, &value, sizeof(uint64_t));
     const TraceEntry &entry = traceEntries.at(trace_index);
-    auto req = std::make_shared<Request>(entry.paddr, sizeof(uint64_t), 0, 0);
-    auto *data = new uint8_t[sizeof(uint64_t)];
-    std::memcpy(data, &value, sizeof(uint64_t));
-    sendData(req, data, false, trace_index);
+    dmaWriteEngine->put(dmaBuffer, sizeof(uint64_t));
+    dmaWriteEngine->startWrite(entry.paddr, sizeof(uint64_t));
     stats.numWrites++;
 }
 
 uint64_t
-CXLType1RAOAccel::resolveOperand(const TraceEntry &entry) const
+PCIeRAODMAAccel::resolveOperand(const TraceEntry &entry) const
 {
     switch (entry.operand_mode) {
       case OperandNone:
@@ -352,13 +357,13 @@ CXLType1RAOAccel::resolveOperand(const TraceEntry &entry) const
 }
 
 void
-CXLType1RAOAccel::handleReadResponse(size_t trace_index, PacketPtr pkt)
+PCIeRAODMAAccel::handleReadResponse(size_t trace_index)
 {
     assert(trace_index < traceEntries.size());
     const TraceEntry &entry = traceEntries.at(trace_index);
 
     uint64_t old_value = 0;
-    pkt->writeData(reinterpret_cast<uint8_t *>(&old_value));
+    std::memcpy(&old_value, dmaBuffer, sizeof(uint64_t));
     activeContext.old_value = old_value;
     activeContext.read_done_tick = clockEdge();
     stats.totalReadLatency +=
@@ -393,7 +398,7 @@ CXLType1RAOAccel::handleReadResponse(size_t trace_index, PacketPtr pkt)
 }
 
 void
-CXLType1RAOAccel::finishCompute()
+PCIeRAODMAAccel::finishCompute()
 {
     assert(activeContext.state == OpComputing);
     stats.totalComputeTicks += clockEdge() - activeContext.read_done_tick;
@@ -402,7 +407,7 @@ CXLType1RAOAccel::finishCompute()
 }
 
 void
-CXLType1RAOAccel::handleWriteResponse(size_t trace_index)
+PCIeRAODMAAccel::handleWriteResponse(size_t trace_index)
 {
     const TraceEntry &entry = traceEntries.at(trace_index);
     resultTable[entry.seq_id] = activeContext.old_value;
@@ -415,102 +420,69 @@ CXLType1RAOAccel::handleWriteResponse(size_t trace_index)
 }
 
 void
-CXLType1RAOAccel::recvData(PacketPtr pkt)
+PCIeRAODMAAccel::completeDmaRead()
 {
-    auto *state = dynamic_cast<TraceSenderState *>(pkt->senderState);
-    assert(state);
-
-    if (state->is_read) {
-        handleReadResponse(state->index, pkt);
-    } else {
-        handleWriteResponse(state->index);
-    }
-
-    delete state;
-    pkt->senderState = nullptr;
-}
-
-PacketPtr
-CXLType1RAOAccel::buildPacket(const RequestPtr &req, bool read)
-{
-    return read ? Packet::createRead(req) : Packet::createWrite(req);
+    assert(activeContext.state == OpReading);
+    dmaReadEngine->get(dmaBuffer, sizeof(uint64_t));
+    handleReadResponse(activeContext.trace_index);
 }
 
 void
-CXLType1RAOAccel::sendData(const RequestPtr &req, uint8_t *data, bool read,
-                           size_t trace_index)
+PCIeRAODMAAccel::completeDmaWrite()
 {
-    PacketPtr pkt = buildPacket(req, read);
-    pkt->dataDynamic<uint8_t>(data);
-    pkt->senderState = new TraceSenderState(trace_index, read);
-
-    if (read) {
-        handleReadPacket(pkt);
-    } else {
-        dcache_pkt = pkt;
-        handleWritePacket();
-    }
-}
-
-bool
-CXLType1RAOAccel::handleReadPacket(PacketPtr pkt)
-{
-    if (!dcachePort.sendTimingReq(pkt)) {
-        dcache_pkt = pkt;
-        return false;
-    }
-    dcache_pkt = nullptr;
-    return true;
-}
-
-bool
-CXLType1RAOAccel::handleWritePacket()
-{
-    if (!dcachePort.sendTimingReq(dcache_pkt)) {
-        return false;
-    }
-    dcache_pkt = nullptr;
-    return true;
+    assert(activeContext.state == OpWriting);
+    handleWriteResponse(activeContext.trace_index);
 }
 
 void
-CXLType1RAOAccel::DcachePort::recvTimingSnoopReq(PacketPtr pkt)
+PCIeRAODMAAccel::DmaReadEngine::onIdle()
 {
-    DPRINTF(CXLType1RAOAccel,
+    device->completeDmaRead();
+}
+
+void
+PCIeRAODMAAccel::DmaWriteEngine::onIdle()
+{
+    device->completeDmaWrite();
+}
+
+void
+PCIeRAODMAAccel::DcachePort::recvTimingSnoopReq(PacketPtr pkt)
+{
+    DPRINTF(PCIeRAODMAAccel,
             "%s received snoop for addr=%#x cmd=%s\n",
             __func__, pkt->getAddr(), pkt->cmdString());
 }
 
 bool
-CXLType1RAOAccel::DcachePort::recvTimingResp(PacketPtr pkt)
+PCIeRAODMAAccel::DcachePort::recvTimingResp(PacketPtr pkt)
 {
-    device->recvData(pkt);
+    DPRINTF(PCIeRAODMAAccel,
+            "Unexpected cached response addr=%#x cmd=%s\n",
+            pkt->getAddr(), pkt->cmdString());
     delete pkt;
     return true;
 }
 
 void
-CXLType1RAOAccel::DcachePort::recvReqRetry()
+PCIeRAODMAAccel::DcachePort::recvReqRetry()
 {
-    assert(device->dcache_pkt != nullptr);
-    PacketPtr pkt = device->dcache_pkt;
-    if (sendTimingReq(pkt)) {
-        device->dcache_pkt = nullptr;
-    }
+    DPRINTF(PCIeRAODMAAccel, "Unexpected cached retry\n");
 }
 
 bool
-CXLType1RAOAccel::IcachePort::recvTimingResp(PacketPtr pkt)
+PCIeRAODMAAccel::IcachePort::recvTimingResp(PacketPtr pkt)
 {
-    DPRINTF(CXLType1RAOAccel, "Received icache response %#x\n",
+    DPRINTF(PCIeRAODMAAccel, "Received icache response %#x\n",
             pkt->getAddr());
+    delete pkt;
     return true;
 }
 
 void
-CXLType1RAOAccel::IcachePort::recvReqRetry()
+PCIeRAODMAAccel::IcachePort::recvReqRetry()
 {
-    DPRINTF(CXLType1RAOAccel, "Received icache retry\n");
+    DPRINTF(PCIeRAODMAAccel, "Received icache retry\n");
 }
 
 } // namespace gem5

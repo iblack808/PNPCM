@@ -151,9 +151,9 @@ class CXLMESITwoLevelCacheHierarchy(
             cache_line_size,
             board.processor.get_isa(),
             board.get_clock_domain(),
-            l1_request_latency=544,
-            l1_response_latency=544,
-            mandatory_queue_latency=276
+            l1_request_latency=24,
+            l1_response_latency=24,
+            mandatory_queue_latency=24
         )
         cxl_cache.sequencer = RubySequencer(
             version=len(self._l1_controllers),
@@ -163,7 +163,10 @@ class CXLMESITwoLevelCacheHierarchy(
         )
         cxl_cache.ruby_system = self.ruby_system
 
-        board.pc.south_bridge.cxl_device.connectCachedPorts(cxl_cache.sequencer.in_ports)
+        accel = getattr(board.pc.south_bridge, 'pcie_device', None)
+        if accel is None:
+            accel = board.pc.south_bridge.cxl_device
+        accel.connectCachedPorts(cxl_cache.sequencer.in_ports)
 
         self._l1_controllers.append(cxl_cache)
 
@@ -174,9 +177,9 @@ class CXLMESITwoLevelCacheHierarchy(
                 self.ruby_system.network,
                 self._num_l2_banks,
                 cache_line_size,
-                l2_request_latency = 300,
-                l2_response_latency = 200,
-                to_l1_latency = 300,
+                l2_request_latency = 256,
+                l2_response_latency = 256,
+                to_l1_latency = 256,
             )
             for _ in range(self._num_l2_banks)
         ]
@@ -189,7 +192,9 @@ class CXLMESITwoLevelCacheHierarchy(
             Directory(self.ruby_system.network, cache_line_size, range, port)
             for range, port in board.get_mem_ports()
         ]
-        cxl_accel = board.pc.south_bridge.cxl_device
+        cxl_accel = getattr(board.pc.south_bridge, 'pcie_device', None)
+        if cxl_accel is None:
+            cxl_accel = board.pc.south_bridge.cxl_device
         if hasattr(cxl_accel, 'cxl_rsp_port'):
             self._directory_controllers.append(Directory(self.ruby_system.network, 
                 cache_line_size, cxl_accel.cxl_mem_range, cxl_accel.cxl_rsp_port))

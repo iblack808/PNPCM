@@ -668,6 +668,8 @@ class DmaWriteFifo : public Drainable, public Serializable
         bool done() const { return _done; }
         Addr address() const { return _addr; }
         size_t requestSize() const { return _size; }
+        const uint8_t *data() const { return _data.data(); }
+        uint8_t *data() { return _data.data(); }
 
       private:
         DmaWriteFifo *parent;

@@ -103,12 +103,17 @@ class SouthBridge(SimObject):
         self.ide.pio = bus.mem_side_ports
         if dma_ports.count(self.ide.dma) == 0:
             self.ide.dma = bus.cpu_side_ports
-        # cxl_device is dynamically initialized and attached in x86_board.py
-        self.cxl_device.pio = bus.mem_side_ports
-        if dma_ports.count(self.cxl_device.dma) == 0:
-            self.cxl_device.dma = bus.cpu_side_ports
-            if hasattr(self.cxl_device, 'cxl_rsp_port'):
-                self.cxl_device.cxl_rsp_port = bus.mem_side_ports
+        # Optional PCIe/CXL accelerator devices are dynamically initialized
+        # and attached by board classes.
+        attached_device = getattr(self, 'pcie_device', None)
+        if attached_device is None:
+            attached_device = getattr(self, 'cxl_device', None)
+        if attached_device is not None:
+            attached_device.pio = bus.mem_side_ports
+            if dma_ports.count(attached_device.dma) == 0:
+                attached_device.dma = bus.cpu_side_ports
+                if hasattr(attached_device, 'cxl_rsp_port'):
+                    attached_device.cxl_rsp_port = bus.mem_side_ports
         self.keyboard.pio = bus.mem_side_ports
         self.pic1.pio = bus.mem_side_ports
         self.pic2.pio = bus.mem_side_ports

@@ -783,10 +783,10 @@ void DmaWriteFifo::resumeWriteTiming()
         // Read data from FIFO into DMA buffer
         std::vector<uint8_t> tmp(req_size);
         buffer.read(tmp.data(), req_size);
-        
+
         event->reset(tmp.data(), req_size, nextAddr);
         port.dmaAction(MemCmd::WriteReq, nextAddr, req_size, event.get(),
-                       tmp.data(), 0, reqFlags);
+                       event->data(), 0, reqFlags);
         
         nextAddr += req_size;
         pendingRequests.emplace_back(std::move(event));
