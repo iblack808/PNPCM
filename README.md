@@ -145,9 +145,9 @@ If you find SimCXL useful for your own work, please cite our papers as follows.
   year={2026},
   volume={},
   number={},
-  pages={1-1},
-  url={https://arxiv.org/abs/2511.23011}
-}
+  pages={1-16},
+  doi={10.1109/HPCA68181.2026.11408611}}
+
 
 @ARTICLE{CXL-DMSim,
   author={Wang, Yanjing and Wu, Lizhou and Hong, Wentao and Ou, Yang and Wang, Zicong and Gao, Sunfeng and Zhang, Jie and Ma, Sheng and Dong, Dezun and Qi, Xingyun and Lai, Mingche and Xiao, Nong},
