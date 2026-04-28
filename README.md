@@ -27,7 +27,7 @@ To build SimCXL, you need to satisfy the dependencies of gem5 version 23.10. We 
 
 The main website can be found at [gem5.org](http://www.gem5.org/).
 
-A good starting point is [Introduction to gem5](http://www.gem5.org/Introduction), and for more information about building the simulator and getting started, please see the [Documentation](http://www.gem5.org/Documentation) and [Tutorials](http://www.gem5.org/Tutorials).
+A good starting point is [Introduction to gem5](https://www.gem5.org/documentation/learning_gem5/introduction), and for more information about building the simulator and getting started, please see the [Documentation](http://www.gem5.org/documentation).
 
 ## Setup on Ubuntu 20.04 or 22.04
 
