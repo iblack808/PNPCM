@@ -817,6 +817,10 @@ X86KvmCPU::updateKvmStateSRegs()
 #undef APPLY_SEGMENT
 #undef APPLY_DTABLE
 
+    X86ISA::LocalApicBase apic_base = sregs.apic_base;
+    apic_base.bsp = (tc->contextId() == 0);
+    sregs.apic_base = apic_base;
+
     // Clear the interrupt bitmap
     memset(&sregs.interrupt_bitmap, 0, sizeof(sregs.interrupt_bitmap));
 
