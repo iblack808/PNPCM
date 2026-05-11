@@ -27,7 +27,7 @@ To build SimCXL, you need to satisfy the dependencies of gem5 version 23.10. We 
 
 The main website can be found at [gem5.org](http://www.gem5.org/).
 
-A good starting point is [Introduction to gem5](http://www.gem5.org/Introduction), and for more information about building the simulator and getting started, please see the [Documentation](http://www.gem5.org/Documentation) and [Tutorials](http://www.gem5.org/Tutorials).
+A good starting point is [Introduction to gem5](https://www.gem5.org/documentation/learning_gem5/introduction), and for more information about building the simulator and getting started, please see the [Documentation](http://www.gem5.org/documentation).
 
 ## Setup on Ubuntu 20.04 or 22.04
 
@@ -145,9 +145,9 @@ If you find SimCXL useful for your own work, please cite our papers as follows.
   year={2026},
   volume={},
   number={},
-  pages={1-1},
-  url={https://arxiv.org/abs/2511.23011}
-}
+  pages={1-16},
+  doi={10.1109/HPCA68181.2026.11408611}}
+
 
 @ARTICLE{CXL-DMSim,
   author={Wang, Yanjing and Wu, Lizhou and Hong, Wentao and Ou, Yang and Wang, Zicong and Gao, Sunfeng and Zhang, Jie and Ma, Sheng and Dong, Dezun and Qi, Xingyun and Lai, Mingche and Xiao, Nong},
