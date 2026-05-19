@@ -37,7 +37,7 @@ Usage
 
 ```
 scons build/X86/gem5.opt -j21
-./build/X86/gem5.opt configs/example/gem5_library/x86-cxl-run.py
+./build/X86/gem5.opt configs/example/gem5_library/x86-cxl-type3-with-classic.py
 ```
 """
 import argparse
@@ -140,8 +140,8 @@ command = (
 
 # Please modify the paths of kernel and disk_image according to the location of your files.
 board.set_kernel_disk_workload(
-    kernel=KernelResource(local_path='/home/xxx/code/fs_image/vmlinux'),
-    disk_image=DiskImageResource(local_path='/home/xxx/code/fs_image/parsec.img'),
+    kernel=KernelResource(local_path='/data/tyb/gem5/vmlinux'),
+    disk_image=DiskImageResource(local_path='/data/tyb/gem5/parsec.img'),
     readfile_contents=command,
     kernel_args=board.get_default_kernel_args() + ["idle=nomwait"],
 )

@@ -30,16 +30,19 @@ Import('*')
 
 SimObject('Device.py', sim_objects=[
     'PioDevice', 'BasicPioDevice', 'DmaDevice', 'DmaVirtDevice', 'IsaFake'])
+SimObject('OracleGPU.py', sim_objects=['OracleGPU'])
 Source('io_device.cc')
 Source('isa_fake.cc')
 Source('dma_device.cc')
 Source('dma_virt_device.cc')
+Source('oracle_gpu.cc')
 
 SimObject('IntPin.py', sim_objects=[])
 SimObject('ResetPort.py', sim_objects=[])
 
 DebugFlag('IsaFake')
 DebugFlag('DMA')
+DebugFlag('OracleGPU')
 
 SimObject('Platform.py', sim_objects=['Platform'])
 Source('platform.cc')
