@@ -36,9 +36,6 @@ from .kernel_disk_workload import KernelDiskWorkload
 
 
 class X86BoardOracleGPU(AbstractSystemBoard, KernelDiskWorkload):
-    ORACLE_GPU_SCRATCH_BASE = 0x30000000
-    ORACLE_GPU_SCRATCH_SIZE = 0x08000000
-
     def __init__(
         self,
         clk_freq: str,
@@ -203,17 +200,7 @@ class X86BoardOracleGPU(AbstractSystemBoard, KernelDiskWorkload):
             X86E820Entry(addr=0x9FC00, size="385kB", range_type=2),
             X86E820Entry(
                 addr=0x100000,
-                size=f"{self.ORACLE_GPU_SCRATCH_BASE - 0x100000:d}B",
-                range_type=1,
-            ),
-            X86E820Entry(
-                addr=self.ORACLE_GPU_SCRATCH_BASE,
-                size=f"{self.ORACLE_GPU_SCRATCH_SIZE:d}B",
-                range_type=2,
-            ),
-            X86E820Entry(
-                addr=self.ORACLE_GPU_SCRATCH_BASE + self.ORACLE_GPU_SCRATCH_SIZE,
-                size=f"{self.mem_ranges[0].size() - (self.ORACLE_GPU_SCRATCH_BASE + self.ORACLE_GPU_SCRATCH_SIZE):d}B",
+                size=f"{self.mem_ranges[0].size() - 0x100000:d}B",
                 range_type=1,
             ),
             X86E820Entry(addr=0xFFFF0000, size="64kB", range_type=2),

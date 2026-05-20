@@ -1,4 +1,3 @@
-import argparse
 import base64
 import os
 from pathlib import Path
@@ -30,41 +29,13 @@ from gem5.components.boards.x86_board_oracle_gpu import X86BoardOracleGPU
 
 KERNEL_PATH = "/data/tyb/gem5/vmlinux"
 DISK_IMAGE_PATH = "/data/tyb/gem5/parsec.img"
-GUEST_BIN_DIR = os.path.join(
+GUEST_BIN_PATH = os.path.join(
     os.path.dirname(os.path.realpath(__file__)),
-    "../../../tests/test-progs/oracle-gpu/bin/x86/linux",
-)
-SMOKE_GUEST_BIN_PATH = os.path.join(GUEST_BIN_DIR, "oracle_gpu_fs_test")
-DECODE_ATTENTION_GUEST_BIN_PATH = os.path.join(
-    GUEST_BIN_DIR, "oracle_gpu_decode_attention_test"
+    "../../../tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_fs_test",
 )
 DETAILED_CPU_TYPE = CPUTypes.TIMING
 BOOT_CPU_TYPE = CPUTypes.KVM
 NUM_CPUS = 1
-SMOKE_MAX_TRANSFER_BYTES = 4096
-DECODE_ATTENTION_MAX_TRANSFER_BYTES = 64 * 1024 * 1024
-
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--workload",
-        choices=["smoke", "decode-attention"],
-        default="smoke",
-        help="Select which guest-side OracleGPU test binary to run.",
-    )
-    parser.add_argument(
-        "--guest-bin",
-        default=None,
-        help="Override the guest binary path injected into the disk image.",
-    )
-    parser.add_argument(
-        "--oracle-gpu-max-transfer-bytes",
-        type=int,
-        default=None,
-        help="Override OracleGPU max_transfer_bytes for this FS run.",
-    )
-    return parser.parse_args()
 
 
 def build_guest_command(guest_bin_path: str) -> str:
@@ -110,33 +81,17 @@ if BOOT_CPU_TYPE == CPUTypes.KVM:
     for proc in processor.start:
         proc.core.usePerf = False
 
-args = parse_args()
-if args.guest_bin is not None:
-    guest_bin_path = args.guest_bin
-elif args.workload == "decode-attention":
-    guest_bin_path = DECODE_ATTENTION_GUEST_BIN_PATH
-else:
-    guest_bin_path = SMOKE_GUEST_BIN_PATH
-
-if args.oracle_gpu_max_transfer_bytes is not None:
-    oracle_gpu_max_transfer_bytes = args.oracle_gpu_max_transfer_bytes
-elif args.workload == "decode-attention":
-    oracle_gpu_max_transfer_bytes = DECODE_ATTENTION_MAX_TRANSFER_BYTES
-else:
-    oracle_gpu_max_transfer_bytes = SMOKE_MAX_TRANSFER_BYTES
-
 board = X86BoardOracleGPU(
     clk_freq="2GHz",
     processor=processor,
     memory=memory,
     cache_hierarchy=cache_hierarchy,
-    oracle_gpu_max_transfer_bytes=oracle_gpu_max_transfer_bytes,
 )
 
 board.set_kernel_disk_workload(
     kernel=KernelResource(local_path=KERNEL_PATH),
     disk_image=DiskImageResource(local_path=DISK_IMAGE_PATH),
-    readfile_contents=build_guest_command(guest_bin_path),
+    readfile_contents=build_guest_command(GUEST_BIN_PATH),
     kernel_args=board.get_default_kernel_args() + ["init=/root/gem5_init.sh"],
 )
 
@@ -147,10 +102,6 @@ simulator = Simulator(
     },
 )
 
-print(
-    "Booting x86 FS system with OracleGPU "
-    f"(workload={args.workload}, guest_bin={guest_bin_path}, "
-    f"max_transfer_bytes={oracle_gpu_max_transfer_bytes})"
-)
+print("Booting x86 FS system with OracleGPU")
 m5.stats.reset()
 simulator.run()

@@ -26,47 +26,15 @@
 #define REG_DOORBELL 0x10
 #define REG_STATUS 0x18
 
-#define ORACLE_GPU_OP_COPY 1U
 #define STATUS_ERROR (1ULL << 2)
 
-struct oracle_gpu_copy_cmd {
+struct oracle_gpu_desc {
     uint64_t src_addr;
     uint64_t dst_addr;
     uint64_t bytes;
-};
-
-struct oracle_gpu_decode_attention_cmd {
-    uint64_t q_addr;
-    uint64_t q_bytes;
-    uint64_t k_cache_addr;
-    uint64_t k_cache_bytes;
-    uint64_t v_cache_addr;
-    uint64_t v_cache_bytes;
-    uint64_t out_addr;
-    uint64_t out_bytes;
-    uint32_t batch_size;
-    uint32_t seq_len;
-    uint32_t num_q_heads;
-    uint32_t num_kv_heads;
-    uint32_t head_dim;
-    uint32_t dtype_bytes;
-    uint32_t layer_id;
-    uint32_t request_id;
-};
-
-struct oracle_gpu_desc {
-    uint32_t op;
-    uint32_t reserved0;
-    uint64_t compute_latency_ns;
     uint64_t completion_flag_addr;
-    union {
-        struct oracle_gpu_copy_cmd copy;
-        struct oracle_gpu_decode_attention_cmd decode_attention;
-    };
+    uint64_t compute_latency_ns;
 };
-
-_Static_assert(sizeof(struct oracle_gpu_desc) == 120,
-               "oracle_gpu_desc layout must match OracleGPU");
 
 static void *
 map_physical(int fd, uint64_t phys_addr, size_t size)
@@ -109,13 +77,11 @@ main(void)
         src[i] = (uint8_t)message[i];
         dst[i] = 0;
     }
-    memset((void *)desc, 0, sizeof(*desc));
     *completion_flag = 0;
 
-    desc->op = ORACLE_GPU_OP_COPY;
-    desc->copy.src_addr = ORACLE_GPU_SRC_ADDR;
-    desc->copy.dst_addr = ORACLE_GPU_DST_ADDR;
-    desc->copy.bytes = bytes;
+    desc->src_addr = ORACLE_GPU_SRC_ADDR;
+    desc->dst_addr = ORACLE_GPU_DST_ADDR;
+    desc->bytes = bytes;
     desc->completion_flag_addr = ORACLE_GPU_FLAG_ADDR;
     desc->compute_latency_ns = 500;
 

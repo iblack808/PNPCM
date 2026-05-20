@@ -1,8 +1,6 @@
 #ifndef __DEV_ORACLE_GPU_HH__
 #define __DEV_ORACLE_GPU_HH__
 
-#include <cstdint>
-#include <string>
 #include <vector>
 
 #include "base/statistics.hh"
@@ -17,12 +15,6 @@ class OracleGPU : public DmaDevice
 {
   private:
     static constexpr ByteOrder byteOrder = ByteOrder::little;
-
-    enum class Opcode : uint32_t
-    {
-        Copy = 1,
-        DecodeAttention = 2,
-    };
 
     enum RegisterOffset : Addr
     {
@@ -43,47 +35,16 @@ class OracleGPU : public DmaDevice
         STATUS_ERROR = 1ULL << 2,
     };
 
-    struct CopyCommand
+    struct CommandDescriptor
     {
         uint64_t src_addr;
         uint64_t dst_addr;
         uint64_t bytes;
-    };
-
-    struct DecodeAttentionCommand
-    {
-        uint64_t q_addr;
-        uint64_t q_bytes;
-        uint64_t k_cache_addr;
-        uint64_t k_cache_bytes;
-        uint64_t v_cache_addr;
-        uint64_t v_cache_bytes;
-        uint64_t out_addr;
-        uint64_t out_bytes;
-        uint32_t batch_size;
-        uint32_t seq_len;
-        uint32_t num_q_heads;
-        uint32_t num_kv_heads;
-        uint32_t head_dim;
-        uint32_t dtype_bytes;
-        uint32_t layer_id;
-        uint32_t request_id;
-    };
-
-    struct CommandDescriptor
-    {
-        uint32_t op;
-        uint32_t reserved0;
-        uint64_t compute_latency_ns;
         uint64_t completion_flag_addr;
-        union
-        {
-            CopyCommand copy;
-            DecodeAttentionCommand decode_attention;
-        };
+        uint64_t compute_latency_ns;
     };
 
-    static_assert(sizeof(CommandDescriptor) == 120,
+    static_assert(sizeof(CommandDescriptor) == 40,
         "OracleGPU command descriptor size must remain stable");
 
     struct OracleGPUStats : public statistics::Group
@@ -91,15 +52,8 @@ class OracleGPU : public DmaDevice
         explicit OracleGPUStats(statistics::Group *parent);
 
         statistics::Scalar commandCount;
-        statistics::Scalar copyCommandCount;
-        statistics::Scalar decodeAttentionCommandCount;
         statistics::Scalar dmaReadBytes;
         statistics::Scalar dmaWriteBytes;
-        statistics::Scalar qReadBytes;
-        statistics::Scalar kCacheReadBytes;
-        statistics::Scalar vCacheReadBytes;
-        statistics::Scalar outputWriteBytes;
-        statistics::Scalar completionWriteBytes;
         statistics::Scalar completedCount;
     } stats;
 
@@ -113,16 +67,12 @@ class OracleGPU : public DmaDevice
     uint64_t errorCode;
 
     std::vector<uint8_t> descBuffer;
-    std::vector<uint8_t> dmaBuffer;
-    std::vector<uint8_t> outputBuffer;
+    std::vector<uint8_t> payloadBuffer;
     CommandDescriptor activeCmd;
     uint32_t completionValue;
 
     EventFunctionWrapper descReadDoneEvent;
     EventFunctionWrapper payloadReadDoneEvent;
-    EventFunctionWrapper qReadDoneEvent;
-    EventFunctionWrapper kCacheReadDoneEvent;
-    EventFunctionWrapper vCacheReadDoneEvent;
     EventFunctionWrapper computeDoneEvent;
     EventFunctionWrapper payloadWriteDoneEvent;
     EventFunctionWrapper completionWriteDoneEvent;
@@ -130,19 +80,10 @@ class OracleGPU : public DmaDevice
     void startCommand();
     void finishDescRead();
     void finishPayloadRead();
-    void finishQRead();
-    void finishKCacheRead();
-    void finishVCacheRead();
     void finishCompute();
     void finishPayloadWrite();
     void finishCompletionWrite();
 
-    void startCopyPayloadRead();
-    void startDecodeAttentionQRead();
-    bool validateCopyCommand() const;
-    bool validateDecodeAttentionCommand() const;
-    Opcode activeOpcode() const;
-    void fillDecodeAttentionOutput();
     void setError(const std::string &reason);
     void clearCommandState();
     bool busy() const { return statusReg & STATUS_BUSY; }
