@@ -1,16 +1,23 @@
 CC ?= gcc
 CFLAGS ?= -O2 -static
+CPPFLAGS += -I../../../../src
 
 OUTDIR ?= ../bin/x86/linux
-OUT = $(OUTDIR)/oracle_gpu_fs_test
+OUTS = \
+	$(OUTDIR)/oracle_gpu_fs_test \
+	$(OUTDIR)/oracle_gpu_generic_test
 
 .PHONY: all clean
 
-all: $(OUT)
+all: $(OUTS)
 
-$(OUT): oracle_gpu_fs_test.c
+$(OUTDIR)/oracle_gpu_fs_test: oracle_gpu_fs_test.c
 	mkdir -p $(OUTDIR)
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $<
+
+$(OUTDIR)/oracle_gpu_generic_test: oracle_gpu_generic_test.c
+	mkdir -p $(OUTDIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $<
 
 clean:
-	rm -f $(OUT)
+	rm -f $(OUTS)

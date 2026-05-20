@@ -12,6 +12,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "dev/oracle_gpu_protocol.h"
+
 #define ORACLE_GPU_MMIO_ADDR 0xC1000000ULL
 #define ORACLE_GPU_MMIO_SIZE 0x1000ULL
 
@@ -20,21 +22,6 @@
 #define ORACLE_GPU_SRC_ADDR (ORACLE_GPU_SCRATCH_BASE + 0x1000ULL)
 #define ORACLE_GPU_DST_ADDR (ORACLE_GPU_SCRATCH_BASE + 0x2000ULL)
 #define ORACLE_GPU_FLAG_ADDR (ORACLE_GPU_SCRATCH_BASE + 0x3000ULL)
-
-#define REG_DESC_ADDR_LO 0x00
-#define REG_DESC_ADDR_HI 0x08
-#define REG_DOORBELL 0x10
-#define REG_STATUS 0x18
-
-#define STATUS_ERROR (1ULL << 2)
-
-struct oracle_gpu_desc {
-    uint64_t src_addr;
-    uint64_t dst_addr;
-    uint64_t bytes;
-    uint64_t completion_flag_addr;
-    uint64_t compute_latency_ns;
-};
 
 static void *
 map_physical(int fd, uint64_t phys_addr, size_t size)
@@ -47,6 +34,18 @@ map_physical(int fd, uint64_t phys_addr, size_t size)
         exit(1);
     }
     return ptr;
+}
+
+static inline void
+mmio_write64(volatile uint8_t *mmio, uint64_t offset, uint64_t value)
+{
+    *(volatile uint64_t *)(mmio + offset) = value;
+}
+
+static inline uint64_t
+mmio_read64(volatile uint8_t *mmio, uint64_t offset)
+{
+    return *(volatile uint64_t *)(mmio + offset);
 }
 
 int
@@ -63,8 +62,8 @@ main(void)
     volatile uint8_t *mmio =
         (volatile uint8_t *)map_physical(fd, ORACLE_GPU_MMIO_ADDR,
                                          ORACLE_GPU_MMIO_SIZE);
-    volatile struct oracle_gpu_desc *desc =
-        (volatile struct oracle_gpu_desc *)map_physical(
+    volatile struct OracleGPUCommand *desc =
+        (volatile struct OracleGPUCommand *)map_physical(
             fd, ORACLE_GPU_DESC_ADDR, 0x1000);
     volatile uint8_t *src =
         (volatile uint8_t *)map_physical(fd, ORACLE_GPU_SRC_ADDR, 0x1000);
@@ -79,21 +78,31 @@ main(void)
     }
     *completion_flag = 0;
 
-    desc->src_addr = ORACLE_GPU_SRC_ADDR;
+    memset((void *)desc, 0, sizeof(*desc));
+    desc->magic = ORACLE_GPU_CMD_MAGIC;
+    desc->version = ORACLE_GPU_CMD_VERSION;
+    desc->op_type = ORACLE_GPU_OP_GENERIC;
+    desc->num_inputs = 1;
+    desc->result_policy = ORACLE_GPU_RESULT_COPY_ORACLE;
     desc->dst_addr = ORACLE_GPU_DST_ADDR;
-    desc->bytes = bytes;
+    desc->dst_bytes = bytes;
+    desc->oracle_result_addr = ORACLE_GPU_SRC_ADDR;
+    desc->oracle_result_bytes = bytes;
     desc->completion_flag_addr = ORACLE_GPU_FLAG_ADDR;
     desc->compute_latency_ns = 500;
+    desc->user_tag = 0x534d4f4b45ULL;
+    desc->inputs[0].addr = ORACLE_GPU_SRC_ADDR;
+    desc->inputs[0].bytes = bytes;
 
-    *(volatile uint64_t *)(mmio + REG_DESC_ADDR_LO) =
-        (uint32_t)(ORACLE_GPU_DESC_ADDR & 0xffffffffULL);
-    *(volatile uint64_t *)(mmio + REG_DESC_ADDR_HI) =
-        (uint32_t)(ORACLE_GPU_DESC_ADDR >> 32);
-    *(volatile uint64_t *)(mmio + REG_DOORBELL) = 1;
+    mmio_write64(mmio, ORACLE_GPU_REG_DESC_ADDR_LO,
+                 (uint32_t)(ORACLE_GPU_DESC_ADDR & 0xffffffffULL));
+    mmio_write64(mmio, ORACLE_GPU_REG_DESC_ADDR_HI,
+                 (uint32_t)(ORACLE_GPU_DESC_ADDR >> 32));
+    mmio_write64(mmio, ORACLE_GPU_REG_DOORBELL, 1);
 
     while (*completion_flag != 1) {
-        uint64_t status = *(volatile uint64_t *)(mmio + REG_STATUS);
-        if (status & STATUS_ERROR) {
+        uint64_t status = mmio_read64(mmio, ORACLE_GPU_REG_STATUS);
+        if (status & ORACLE_GPU_STATUS_ERROR) {
             fprintf(stderr, "OracleGPU status error: %#" PRIx64 "\n", status);
             return 2;
         }

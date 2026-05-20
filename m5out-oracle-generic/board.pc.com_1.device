@@ -92,8 +92,8 @@ APIC: Switch to symmetric I/O mode setup
 ExtINT not setup in hardware but reported by MP table
 ..TIMER: vector=0x30 apic1=0 pin1=2 apic2=0 pin2=0
 tsc: Using PIT calibration value
-tsc: Detected 2596.073 MHz processor
-clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x256bbeb6d3b, max_idle_ns: 440795334689 ns
+tsc: Detected 2583.302 MHz processor
+clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x253c9e15ea3, max_idle_ns: 440795250218 ns
 Calibrating delay loop (skipped) preset value.. 15999.84 BogoMIPS (lpj=7999923)
 Last level iTLB entries: 4KB 512, 2MB 8, 4MB 4
 Last level dTLB entries: 4KB 512, 2MB 8, 4MB 4, 1GB 0
@@ -123,7 +123,7 @@ clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1911
 futex hash table entries: 256 (order: 2, 16384 bytes, linear)
 NET: Registered PF_NETLINK/PF_ROUTE protocol family
 audit: initializing netlink subsys (disabled)
-audit: type=2000 audit(1325376000.287:1): state=initialized audit_enabled=0 res=1
+audit: type=2000 audit(1325376000.299:1): state=initialized audit_enabled=0 res=1
 thermal_sys: Registered thermal governor 'step_wise'
 thermal_sys: Registered thermal governor 'user_space'
 cpuidle: using governor ladder
@@ -217,7 +217,7 @@ usbhid: USB HID core driver
 The cxl_mem driver module has been initialized successfully!
 NET: Registered PF_PACKET protocol family
 IPI shorthand broadcast: enabled
-sched_clock: Marking stable (419458225, -8157505)->(408732674, 2568046)
+sched_clock: Marking stable (436686266, -8167840)->(426933110, 1585316)
 Demotion targets for Node 0: null
 clk: Disabling unused clocks
 ata1.00: ATA-7: M5 IDE Disk, , max UDMA/66
@@ -225,8 +225,8 @@ ata1.00: 50331648 sectors, multi 0: LBA
 scsi 0:0:0:0: Direct-Access     ATA      M5 IDE Disk      n/a  PQ: 0 ANSI: 5
 sd 0:0:0:0: [sda] 50331648 512-byte logical blocks: (25.8 GB/24.0 GiB)
 sd 0:0:0:0: [sda] Write Protect is off
-sd 0:0:0:0: Attached scsi generic sg0 type 0
 sd 0:0:0:0: [sda] Write cache: disabled, read cache: enabled, doesn't support DPO or FUA
+sd 0:0:0:0: Attached scsi generic sg0 type 0
 sd 0:0:0:0: [sda] Preferred minimum I/O size 512 bytes
  sda: sda1
 sd 0:0:0:0: [sda] Attached SCSI disk
@@ -240,4 +240,12 @@ rodata_test: all tests were successful
 Run /root/gem5_init.sh as init process
 mount: /dev: deprocess '/sbin/m5' started with executable stack
 vtmpfs already mounted on /dev.
-OracleGPU FS smoke test passed: 'oracle-gpu-fs-smoke'
+expected read bytes: 392
+expected write bytes: 132
+command count: 1
+generic command count: 1
+dma read bytes: 392
+dma write bytes: 132
+completed count: 1
+invalid command count: 0
+OracleGPU generic test passed with 3 inputs

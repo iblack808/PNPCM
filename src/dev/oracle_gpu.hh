@@ -5,6 +5,7 @@
 
 #include "base/statistics.hh"
 #include "dev/dma_device.hh"
+#include "dev/oracle_gpu_protocol.h"
 #include "params/OracleGPU.hh"
 #include "sim/eventq.hh"
 
@@ -26,6 +27,8 @@ class OracleGPU : public DmaDevice
         REG_COMPLETED_COUNT = 0x28,
         REG_DMA_READ_BYTES = 0x30,
         REG_DMA_WRITE_BYTES = 0x38,
+        REG_GENERIC_COMMAND_COUNT = 0x40,
+        REG_INVALID_COMMAND_COUNT = 0x48,
     };
 
     enum StatusBits : uint64_t
@@ -35,26 +38,19 @@ class OracleGPU : public DmaDevice
         STATUS_ERROR = 1ULL << 2,
     };
 
-    struct CommandDescriptor
-    {
-        uint64_t src_addr;
-        uint64_t dst_addr;
-        uint64_t bytes;
-        uint64_t completion_flag_addr;
-        uint64_t compute_latency_ns;
-    };
-
-    static_assert(sizeof(CommandDescriptor) == 40,
-        "OracleGPU command descriptor size must remain stable");
+    using CommandDescriptor = OracleGPUCommand;
+    using InputSegment = OracleGPUInputSegment;
 
     struct OracleGPUStats : public statistics::Group
     {
         explicit OracleGPUStats(statistics::Group *parent);
 
         statistics::Scalar commandCount;
+        statistics::Scalar genericCommandCount;
         statistics::Scalar dmaReadBytes;
         statistics::Scalar dmaWriteBytes;
         statistics::Scalar completedCount;
+        statistics::Scalar invalidCommandCount;
     } stats;
 
     const Addr pioAddr;
@@ -67,22 +63,30 @@ class OracleGPU : public DmaDevice
     uint64_t errorCode;
 
     std::vector<uint8_t> descBuffer;
-    std::vector<uint8_t> payloadBuffer;
+    std::vector<uint8_t> inputBuffer;
+    std::vector<uint8_t> outputBuffer;
     CommandDescriptor activeCmd;
     uint32_t completionValue;
+    uint32_t currentInputIndex;
 
     EventFunctionWrapper descReadDoneEvent;
-    EventFunctionWrapper payloadReadDoneEvent;
+    EventFunctionWrapper inputReadDoneEvent;
     EventFunctionWrapper computeDoneEvent;
+    EventFunctionWrapper oracleResultReadDoneEvent;
     EventFunctionWrapper payloadWriteDoneEvent;
     EventFunctionWrapper completionWriteDoneEvent;
 
     void startCommand();
     void finishDescRead();
-    void finishPayloadRead();
+    void finishInputRead();
     void finishCompute();
+    void finishOracleResultRead();
     void finishPayloadWrite();
     void finishCompletionWrite();
+    void startNextInputRead();
+    void startResultWrite();
+    bool validateCommand();
+    const InputSegment &currentInput() const;
 
     void setError(const std::string &reason);
     void clearCommandState();
