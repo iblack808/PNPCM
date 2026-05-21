@@ -249,6 +249,12 @@ class CXLMemCtrl : public PciDevice
         /** Request port of the CXLMemCtrl. */
         CXLRequestPort memReqPort;
 
+        /** Address range exposed as host-visible CXL memory. */
+        const AddrRange devMemRange;
+
+        /** Protocol processing latency used by BAR0 memory-window accesses. */
+        const Cycles protoProcLat;
+
         Tick preRspTick = -1;
 
         struct CXLCtrlStats : public statistics::Group

@@ -36,6 +36,8 @@ CXLMemCtrl::CXLMemCtrl(const Params &p)
             ticksToCycles(p.proto_proc_lat), p.rsp_size, p.cxl_mem_range),
     memReqPort(p.name + ".mem_req_port", *this, cxlRspPort,
             ticksToCycles(p.proto_proc_lat), p.req_size),
+    devMemRange(p.cxl_mem_range),
+    protoProcLat(ticksToCycles(p.proto_proc_lat)),
     preRspTick(0),        
     stats(*this)
     {
@@ -119,6 +121,17 @@ CXLMemCtrl::read(PacketPtr pkt)
     DPRINTF(CXLRange, "PIO read addr %#lx size %u\n",
             addr, pkt->getSize());
 
+    int bar_num = -1;
+    Addr bar_offset = 0;
+    if (getBAR(addr, bar_num, bar_offset) && bar_num == 0 &&
+        bar_offset + pkt->getSize() <= devMemRange.size()) {
+        pkt->setAddr(devMemRange.start() + bar_offset);
+        pkt->cxl_cmd = MemCmd::M2SReq;
+        Tick access_delay = memReqPort.sendAtomic(pkt);
+        pkt->setAddr(addr);
+        return pioDelay + protoProcLat * clockPeriod() + access_delay;
+    }
+
     pkt->setUintX(0, ByteOrder::little);
     pkt->makeResponse();
     return pioDelay;
@@ -132,6 +145,17 @@ CXLMemCtrl::write(PacketPtr pkt)
 
     DPRINTF(CXLRange, "PIO write addr %#lx data %#lx\n",
             addr, data);
+
+    int bar_num = -1;
+    Addr bar_offset = 0;
+    if (getBAR(addr, bar_num, bar_offset) && bar_num == 0 &&
+        bar_offset + pkt->getSize() <= devMemRange.size()) {
+        pkt->setAddr(devMemRange.start() + bar_offset);
+        pkt->cxl_cmd = MemCmd::M2SRwD;
+        Tick access_delay = memReqPort.sendAtomic(pkt);
+        pkt->setAddr(addr);
+        return pioDelay + protoProcLat * clockPeriod() + access_delay;
+    }
 
     pkt->makeResponse();
     return pioDelay;

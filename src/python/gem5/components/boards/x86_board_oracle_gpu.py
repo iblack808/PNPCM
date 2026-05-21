@@ -7,6 +7,8 @@ from m5.objects import (
     AddrRange,
     BaseXBar,
     Bridge,
+    CXLBridge,
+    CXLMemCtrl,
     CowDiskImage,
     IdeDisk,
     IOXBar,
@@ -23,6 +25,7 @@ from m5.objects import (
     X86IntelMPProcessor,
     X86SMBiosBiosInformation,
 )
+from m5.params import Latency
 from m5.util.convert import toMemorySize
 
 from ...isas import ISA
@@ -45,10 +48,20 @@ class X86BoardOracleGPU(AbstractSystemBoard, KernelDiskWorkload):
         oracle_gpu_mmio_base: int = 0xC1000000,
         oracle_gpu_mmio_size: int = 0x1000,
         oracle_gpu_max_transfer_bytes: int = 4096,
+        cxl_pcm_memory: AbstractMemorySystem = None,
+        cxl_pcm_base: int = 0x100000000,
+        cxl_pcm_controller_latency: str = "15ns",
+        cxl_pcm_queue_size: int = 48,
     ) -> None:
         self._oracle_gpu_mmio_base = oracle_gpu_mmio_base
         self._oracle_gpu_mmio_size = oracle_gpu_mmio_size
         self._oracle_gpu_max_transfer_bytes = oracle_gpu_max_transfer_bytes
+        self._cxl_pcm_memory = cxl_pcm_memory
+        self._cxl_pcm_base = cxl_pcm_base
+        self._cxl_pcm_controller_latency = cxl_pcm_controller_latency
+        self._cxl_pcm_queue_size = cxl_pcm_queue_size
+        self._cxl_pcm_range = None
+        self._cxl_pcm_bar0_range = None
 
         super().__init__(
             clk_freq=clk_freq,
@@ -72,6 +85,15 @@ class X86BoardOracleGPU(AbstractSystemBoard, KernelDiskWorkload):
             pio_latency="50ns",
             max_transfer_bytes=self._oracle_gpu_max_transfer_bytes,
         )
+        if self._cxl_pcm_memory is not None:
+            self.cxl_pcm_memory = self._cxl_pcm_memory
+            self.cxl_pcm_memory.module.clk_domain = self.get_clock_domain()
+            self.pc.south_bridge.cxl_device = CXLMemCtrl(
+                pci_func=0, pci_dev=6, pci_bus=0
+            )
+            self.pc.south_bridge.cxl_device.clk_domain = (
+                self.get_clock_domain()
+            )
         self.workload = X86FsLinux()
         self.iobus = IOXBar()
         self._setup_io_devices()
@@ -82,25 +104,42 @@ class X86BoardOracleGPU(AbstractSystemBoard, KernelDiskWorkload):
         pci_config_address_space_base = 0xC000000000000000
         interrupts_address_space_base = 0xA000000000000000
         apic_range_size = 1 << 12
+        cxl_pcm_ctrl = self._setup_cxl_pcm_memory()
 
         if self.get_cache_hierarchy().is_ruby():
+            dma_ports = [self.pc.south_bridge.ide.dma, self.oracle_gpu.dma]
+            if cxl_pcm_ctrl is not None:
+                dma_ports.append(cxl_pcm_ctrl.dma)
             self.pc.attachIO(
                 self.get_io_bus(),
-                [self.pc.south_bridge.ide.dma, self.oracle_gpu.dma],
+                dma_ports,
             )
         else:
-            self.bridge = Bridge(delay="50ns")
+            if cxl_pcm_ctrl is not None:
+                self.bridge = CXLBridge(
+                    bridge_lat="50ns",
+                    proto_proc_lat="12ns",
+                    req_fifo_depth=128,
+                    resp_fifo_depth=128,
+                )
+                self.bridge.clk_domain = self.get_clock_domain()
+            else:
+                self.bridge = Bridge(delay="50ns")
             self.bridge.mem_side_port = self.get_io_bus().cpu_side_ports
             self.bridge.cpu_side_port = (
                 self.get_cache_hierarchy().get_mem_side_port()
             )
-            self.bridge.ranges = [
+            bridge_ranges = [
                 AddrRange(0xC0000000, 0xFFFF0000),
                 AddrRange(
                     io_address_space_base, interrupts_address_space_base - 1
                 ),
                 AddrRange(pci_config_address_space_base, Addr.max),
             ]
+            if self._cxl_pcm_range is not None:
+                bridge_ranges.append(self._cxl_pcm_bar0_range)
+                bridge_ranges.append(self._cxl_pcm_range)
+            self.bridge.ranges = bridge_ranges
 
             self.apicbridge = Bridge(delay="50ns")
             self.apicbridge.cpu_side_port = self.get_io_bus().mem_side_ports
@@ -205,7 +244,44 @@ class X86BoardOracleGPU(AbstractSystemBoard, KernelDiskWorkload):
             ),
             X86E820Entry(addr=0xFFFF0000, size="64kB", range_type=2),
         ]
+        if self._cxl_pcm_range is not None:
+            entries.append(
+                X86E820Entry(
+                    addr=self._cxl_pcm_range.start,
+                    size=f"{self._cxl_pcm_range.size()}B",
+                    range_type=20,
+                )
+            )
         self.workload.e820_table.entries = entries
+
+    def _setup_cxl_pcm_memory(self):
+        if self._cxl_pcm_memory is None:
+            return None
+
+        cxl_pcm = self._cxl_pcm_memory
+        cxl_pcm.incorporate_memory(self)
+        cxl_pcm_range = AddrRange(
+            Addr(self._cxl_pcm_base), size=cxl_pcm.get_size()
+        )
+        cxl_pcm.set_memory_range([cxl_pcm_range])
+        self._cxl_pcm_range = cxl_pcm_range
+        self._cxl_pcm_bar0_range = AddrRange(
+            Addr(self._cxl_pcm_base + cxl_pcm.get_size()),
+            size=cxl_pcm.get_size(),
+        )
+
+        cxl_pcm_ctrl = self.pc.south_bridge.cxl_device
+        cxl_pcm_ctrl.connectMemory(cxl_pcm_range, cxl_pcm)
+        cxl_pcm_ctrl.cxl_mem_bus.clk_domain = self.get_clock_domain()
+        cxl_pcm_ctrl.configCXL(
+            Latency(self._cxl_pcm_controller_latency),
+            self._cxl_pcm_queue_size,
+        )
+
+        for mc in cxl_pcm.get_memory_controllers():
+            self.memories.append(getattr(mc, "dram", mc))
+
+        return cxl_pcm_ctrl
 
     @overrides(AbstractSystemBoard)
     def has_io_bus(self) -> bool:
@@ -221,11 +297,14 @@ class X86BoardOracleGPU(AbstractSystemBoard, KernelDiskWorkload):
 
     @overrides(AbstractSystemBoard)
     def get_dma_ports(self) -> Sequence[Port]:
-        return [
+        ports = [
             self.pc.south_bridge.ide.dma,
             self.iobus.mem_side_ports,
             self.oracle_gpu.dma,
         ]
+        if self._cxl_pcm_memory is not None:
+            ports.append(self.pc.south_bridge.cxl_device.dma)
+        return ports
 
     @overrides(AbstractSystemBoard)
     def has_coherent_io(self) -> bool:
