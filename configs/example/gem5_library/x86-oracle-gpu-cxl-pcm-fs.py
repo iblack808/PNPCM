@@ -6,7 +6,12 @@ import gem5.components.boards as gem5_boards_pkg
 from gem5.components.cachehierarchies.classic.private_l1_private_l2_shared_l3_cache_hierarchy import (
     PrivateL1PrivateL2SharedL3CacheHierarchy,
 )
-from gem5.components.memory.cxl_pcm import SingleChannelCXLPCM
+from gem5.components.memory.cxl_pcm_from_dram import (
+    SingleChannelCXLPCMFromDRAM,
+)
+from gem5.components.memory.cxl_pcm_from_nvm import (
+    SingleChannelCXLPCMFromNVM,
+)
 from gem5.components.memory.single_channel import SingleChannelDDR4_2400
 from gem5.components.processors.cpu_types import CPUTypes
 from gem5.components.processors.simple_switchable_processor import (
@@ -35,6 +40,8 @@ parser = argparse.ArgumentParser(
     description="Run x86 FS with DDR, OracleGPU, and CXL-PCM memory."
 )
 parser.add_argument("--cxl-pcm-size", default="1GiB")
+parser.add_argument("--cxl-pcm-backend", choices=["from_dram", "from_nvm"],
+                    default="from_dram")
 parser.add_argument("--cxl-pcm-base", type=lambda x: int(x, 0),
                     default=0x100000000)
 parser.add_argument("--cxl-pcm-read-latency", default="150ns")
@@ -75,7 +82,11 @@ cache_hierarchy = PrivateL1PrivateL2SharedL3CacheHierarchy(
 )
 
 memory = SingleChannelDDR4_2400(size="3GB")
-cxl_pcm = SingleChannelCXLPCM(
+cxl_pcm_cls = {
+    "from_dram": SingleChannelCXLPCMFromDRAM,
+    "from_nvm": SingleChannelCXLPCMFromNVM,
+}[args.cxl_pcm_backend]
+cxl_pcm = cxl_pcm_cls(
     size=args.cxl_pcm_size,
     read_latency=args.cxl_pcm_read_latency,
     write_latency=args.cxl_pcm_write_latency,
@@ -117,6 +128,9 @@ simulator = Simulator(
     },
 )
 
-print("Booting x86 FS system with OracleGPU and CXL-PCM")
+print(
+    "Booting x86 FS system with OracleGPU and "
+    f"CXL-PCM_{args.cxl_pcm_backend}"
+)
 m5.stats.reset()
 simulator.run()

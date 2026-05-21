@@ -87,7 +87,10 @@ class X86BoardOracleGPU(AbstractSystemBoard, KernelDiskWorkload):
         )
         if self._cxl_pcm_memory is not None:
             self.cxl_pcm_memory = self._cxl_pcm_memory
-            self.cxl_pcm_memory.module.clk_domain = self.get_clock_domain()
+            if hasattr(self.cxl_pcm_memory, "module"):
+                self.cxl_pcm_memory.module.clk_domain = (
+                    self.get_clock_domain()
+                )
             self.pc.south_bridge.cxl_device = CXLMemCtrl(
                 pci_func=0, pci_dev=6, pci_bus=0
             )

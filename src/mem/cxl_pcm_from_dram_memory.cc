@@ -3,11 +3,11 @@
  * All rights reserved.
  */
 
-#include "mem/cxl_pcm_memory.hh"
+#include "mem/cxl_pcm_from_dram_memory.hh"
 
 #include "base/random.hh"
 #include "base/trace.hh"
-#include "debug/CXLPCM.hh"
+#include "debug/CXLPCMFromDRAM.hh"
 #include "debug/Drain.hh"
 
 namespace gem5
@@ -16,7 +16,7 @@ namespace gem5
 namespace memory
 {
 
-CXLPCMMemory::PCMStats::PCMStats(CXLPCMMemory &mem)
+CXLPCMFromDRAMMemory::PCMStats::PCMStats(CXLPCMFromDRAMMemory &mem)
     : statistics::Group(&mem),
       ADD_STAT(pcmReadBytes, statistics::units::Byte::get(),
                "Total bytes read from this CXL-PCM memory"),
@@ -31,7 +31,8 @@ CXLPCMMemory::PCMStats::PCMStats(CXLPCMMemory &mem)
 {
 }
 
-CXLPCMMemory::CXLPCMMemory(const CXLPCMMemoryParams &p)
+CXLPCMFromDRAMMemory::CXLPCMFromDRAMMemory(
+        const CXLPCMFromDRAMMemoryParams &p)
     : AbstractMemory(p),
       pcmStats(*this),
       port(name() + ".port", *this),
@@ -49,7 +50,7 @@ CXLPCMMemory::CXLPCMMemory(const CXLPCMMemoryParams &p)
 }
 
 void
-CXLPCMMemory::init()
+CXLPCMFromDRAMMemory::init()
 {
     AbstractMemory::init();
 
@@ -59,7 +60,7 @@ CXLPCMMemory::init()
 }
 
 Tick
-CXLPCMMemory::recvAtomic(PacketPtr pkt)
+CXLPCMFromDRAMMemory::recvAtomic(PacketPtr pkt)
 {
     panic_if(pkt->cacheResponding(), "Should not see packets where cache "
              "is responding");
@@ -71,7 +72,8 @@ CXLPCMMemory::recvAtomic(PacketPtr pkt)
 }
 
 Tick
-CXLPCMMemory::recvAtomicBackdoor(PacketPtr pkt, MemBackdoorPtr &_backdoor)
+CXLPCMFromDRAMMemory::recvAtomicBackdoor(
+        PacketPtr pkt, MemBackdoorPtr &_backdoor)
 {
     const Tick latency = recvAtomic(pkt);
     getBackdoor(_backdoor);
@@ -79,7 +81,7 @@ CXLPCMMemory::recvAtomicBackdoor(PacketPtr pkt, MemBackdoorPtr &_backdoor)
 }
 
 void
-CXLPCMMemory::recvFunctional(PacketPtr pkt)
+CXLPCMFromDRAMMemory::recvFunctional(PacketPtr pkt)
 {
     pkt->pushLabel(name());
 
@@ -96,14 +98,14 @@ CXLPCMMemory::recvFunctional(PacketPtr pkt)
 }
 
 void
-CXLPCMMemory::recvMemBackdoorReq(const MemBackdoorReq &req,
+CXLPCMFromDRAMMemory::recvMemBackdoorReq(const MemBackdoorReq &req,
         MemBackdoorPtr &_backdoor)
 {
     getBackdoor(_backdoor);
 }
 
 bool
-CXLPCMMemory::recvTimingReq(PacketPtr pkt)
+CXLPCMFromDRAMMemory::recvTimingReq(PacketPtr pkt)
 {
     panic_if(pkt->cacheResponding(), "Should not see packets where cache "
              "is responding");
@@ -159,7 +161,7 @@ CXLPCMMemory::recvTimingReq(PacketPtr pkt)
 }
 
 void
-CXLPCMMemory::release()
+CXLPCMFromDRAMMemory::release()
 {
     assert(isBusy);
     isBusy = false;
@@ -170,7 +172,7 @@ CXLPCMMemory::release()
 }
 
 void
-CXLPCMMemory::dequeue()
+CXLPCMFromDRAMMemory::dequeue()
 {
     assert(!packetQueue.empty());
     DeferredPacket deferred_pkt = packetQueue.front();
@@ -184,14 +186,14 @@ CXLPCMMemory::dequeue()
             reschedule(dequeueEvent,
                        std::max(packetQueue.front().tick, curTick()), true);
         } else if (drainState() == DrainState::Draining) {
-            DPRINTF(Drain, "Draining of CXLPCMMemory complete\n");
+            DPRINTF(Drain, "Draining of CXLPCMFromDRAMMemory complete\n");
             signalDrainDone();
         }
     }
 }
 
 Tick
-CXLPCMMemory::getLatency(PacketPtr pkt) const
+CXLPCMFromDRAMMemory::getLatency(PacketPtr pkt) const
 {
     Tick base_latency = readLatency;
     if (pkt->isWrite()) {
@@ -203,30 +205,30 @@ CXLPCMMemory::getLatency(PacketPtr pkt) const
 }
 
 double
-CXLPCMMemory::getBandwidth(PacketPtr pkt) const
+CXLPCMFromDRAMMemory::getBandwidth(PacketPtr pkt) const
 {
     return pkt->isWrite() ? writeBandwidth : readBandwidth;
 }
 
 void
-CXLPCMMemory::recordPCMStats(PacketPtr pkt)
+CXLPCMFromDRAMMemory::recordPCMStats(PacketPtr pkt)
 {
     if (pkt->isRead()) {
         pcmStats.pcmReadRequests++;
         pcmStats.pcmReadBytes += pkt->getSize();
-        DPRINTF(CXLPCM, "read addr=%#llx bytes=%u\n",
+        DPRINTF(CXLPCMFromDRAM, "read addr=%#llx bytes=%u\n",
                 pkt->getAddr(), pkt->getSize());
     } else if (pkt->isWrite()) {
         pcmStats.pcmWriteRequests++;
         pcmStats.pcmWriteBytes += pkt->getSize();
         pcmStats.totalPcmWrites += pkt->getSize();
-        DPRINTF(CXLPCM, "write addr=%#llx bytes=%u\n",
+        DPRINTF(CXLPCMFromDRAM, "write addr=%#llx bytes=%u\n",
                 pkt->getAddr(), pkt->getSize());
     }
 }
 
 void
-CXLPCMMemory::recvRespRetry()
+CXLPCMFromDRAMMemory::recvRespRetry()
 {
     assert(retryResp);
 
@@ -234,7 +236,7 @@ CXLPCMMemory::recvRespRetry()
 }
 
 Port &
-CXLPCMMemory::getPort(const std::string &if_name, PortID idx)
+CXLPCMFromDRAMMemory::getPort(const std::string &if_name, PortID idx)
 {
     if (if_name != "port") {
         return AbstractMemory::getPort(if_name, idx);
@@ -244,23 +246,24 @@ CXLPCMMemory::getPort(const std::string &if_name, PortID idx)
 }
 
 DrainState
-CXLPCMMemory::drain()
+CXLPCMFromDRAMMemory::drain()
 {
     if (!packetQueue.empty()) {
-        DPRINTF(Drain, "CXLPCMMemory queue has requests, waiting to drain\n");
+        DPRINTF(Drain, "CXLPCMFromDRAMMemory queue has requests, "
+                "waiting to drain\n");
         return DrainState::Draining;
     } else {
         return DrainState::Drained;
     }
 }
 
-CXLPCMMemory::MemoryPort::MemoryPort(const std::string& _name,
-                                     CXLPCMMemory& _memory)
+CXLPCMFromDRAMMemory::MemoryPort::MemoryPort(
+        const std::string& _name, CXLPCMFromDRAMMemory& _memory)
     : ResponsePort(_name), mem(_memory)
 { }
 
 AddrRangeList
-CXLPCMMemory::MemoryPort::getAddrRanges() const
+CXLPCMFromDRAMMemory::MemoryPort::getAddrRanges() const
 {
     AddrRangeList ranges;
     ranges.push_back(mem.getAddrRange());
@@ -268,39 +271,40 @@ CXLPCMMemory::MemoryPort::getAddrRanges() const
 }
 
 Tick
-CXLPCMMemory::MemoryPort::recvAtomic(PacketPtr pkt)
+CXLPCMFromDRAMMemory::MemoryPort::recvAtomic(PacketPtr pkt)
 {
     return mem.recvAtomic(pkt);
 }
 
 Tick
-CXLPCMMemory::MemoryPort::recvAtomicBackdoor(
+CXLPCMFromDRAMMemory::MemoryPort::recvAtomicBackdoor(
         PacketPtr pkt, MemBackdoorPtr &_backdoor)
 {
     return mem.recvAtomicBackdoor(pkt, _backdoor);
 }
 
 void
-CXLPCMMemory::MemoryPort::recvFunctional(PacketPtr pkt)
+CXLPCMFromDRAMMemory::MemoryPort::recvFunctional(PacketPtr pkt)
 {
     mem.recvFunctional(pkt);
 }
 
 void
-CXLPCMMemory::MemoryPort::recvMemBackdoorReq(const MemBackdoorReq &req,
+CXLPCMFromDRAMMemory::MemoryPort::recvMemBackdoorReq(
+        const MemBackdoorReq &req,
         MemBackdoorPtr &backdoor)
 {
     mem.recvMemBackdoorReq(req, backdoor);
 }
 
 bool
-CXLPCMMemory::MemoryPort::recvTimingReq(PacketPtr pkt)
+CXLPCMFromDRAMMemory::MemoryPort::recvTimingReq(PacketPtr pkt)
 {
     return mem.recvTimingReq(pkt);
 }
 
 void
-CXLPCMMemory::MemoryPort::recvRespRetry()
+CXLPCMFromDRAMMemory::MemoryPort::recvRespRetry()
 {
     mem.recvRespRetry();
 }

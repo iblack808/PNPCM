@@ -1,14 +1,35 @@
-# OracleGPU Phase B Handoff
+# OracleGPU and CXL-PCM Handoff
 
-This document summarizes the current OracleGPU state after the Phase B
-"generic GPU operation proxy" refactor. It is intended for a future Codex
-agent or engineer to continue implementation without re-discovering context.
+This document records the current SimCXL state after the OracleGPU Phase B
+generic-command work and the first system-level CXL-PCM memory tier work. It is
+intended for a future Codex agent or engineer to continue without re-discovering
+the project context.
 
-## Scope completed in this phase
+Current status:
 
-The old OracleGPU implementation only supported one `src_addr -> dst_addr`
-copy-like command. The current implementation generalizes OracleGPU into a
-generic GPU operation proxy:
+- OracleGPU is implemented as a generic GPU-operation proxy.
+- A guest-side OracleGPU runtime shim exists and has passed FS guest tests.
+- CXL-PCM exists in two selectable backend variants:
+  - `CXL-PCM_from_dram`: custom DRAM-path-derived memory object.
+  - `CXL-PCM_from_nvm`: gem5 NVMInterface/MemCtrl-derived backend.
+- Both CXL-PCM variants have passed:
+  - CPU load/store CXL-PCM test.
+  - OracleGPU DMA read/write CXL-PCM test.
+
+Deliberately not implemented:
+
+- No attention-specific OracleGPU command.
+- No real attention, matmul, QKV, sequence, or head semantics.
+- No PyTorch or vLLM integration.
+- No scheduler.
+- No sealed KV store.
+- No near-memory attention.
+- No PCM cell-level physics or wear leveling.
+
+## OracleGPU Generic Device
+
+The old OracleGPU implementation only supported a single copy-like command.
+The current implementation generalizes it into a generic operation proxy:
 
 1. Read a command descriptor from guest memory.
 2. Validate the descriptor.
@@ -18,24 +39,28 @@ generic GPU operation proxy:
 6. Write `completion_flag_addr = 1`.
 7. Update MMIO-visible counters, stats, and debug logs.
 
-OracleGPU does **not** understand any attention/matmul/QKV/seq/head semantics.
-The descriptor carries only generic memory segments plus output policy.
+OracleGPU does not understand any model semantics. Input buffers are used to
+generate memory-system traffic. For `ZERO_FILL` and `PATTERN_FILL`, input
+payload content is ignored after DMA traffic is generated.
 
-## Key design constraints already enforced
+Main files:
 
-- No attention-specific command exists.
-- No real attention or matmul implementation exists.
-- No PyTorch or vLLM integration exists.
-- No scheduler exists.
-- No near-memory / CXL-PCM attention logic exists.
+- `src/dev/oracle_gpu.hh`
+- `src/dev/oracle_gpu.cc`
+- `src/dev/oracle_gpu_protocol.h`
 
-## Protocol and descriptor
+Important implementation detail:
 
-Shared protocol header:
+- OracleGPU inherits from `DmaDevice` and uses the wrapped gem5 DMA engine
+  helpers (`dmaRead` / `dmaWrite`). It is not just a bare `DmaPort` interface.
+
+### OracleGPU Protocol
+
+Shared descriptor header:
 
 - `src/dev/oracle_gpu_protocol.h`
 
-Current descriptor:
+Current descriptor fields:
 
 - `magic`
 - `version`
@@ -64,50 +89,7 @@ Current protocol constants:
 - `ORACLE_GPU_RESULT_COPY_ORACLE = 3`
 - `ORACLE_GPU_PATTERN_BYTE = 0xa5`
 
-The protocol header also defines MMIO register offsets and status bits so guest
-tests and device code use the same constants.
-
-## Device implementation
-
-Main files:
-
-- `src/dev/oracle_gpu.hh`
-- `src/dev/oracle_gpu.cc`
-
-Execution flow in the current code:
-
-1. CPU writes descriptor address to existing MMIO registers.
-2. CPU rings the existing doorbell register.
-3. OracleGPU DMA-reads the descriptor from guest memory.
-4. OracleGPU validates:
-   - `magic`
-   - `version`
-   - `op_type`
-   - `num_inputs`
-   - `dst_addr`
-   - `dst_bytes`
-   - `completion_flag_addr`
-   - per-input `addr` and `bytes`
-   - `result_policy`
-   - `oracle_result_*` if `COPY_ORACLE`
-5. OracleGPU DMA-reads each input segment sequentially.
-6. After all reads complete, OracleGPU schedules a compute delay:
-   - `delay = sim_clock::as_int::ns * activeCmd.compute_latency_ns`
-7. OracleGPU writes output according to `result_policy`:
-   - `ZERO_FILL`: fill output with zeroes
-   - `PATTERN_FILL`: fill output with `0xa5`
-   - `COPY_ORACLE`: DMA-read `oracle_result_addr` and DMA-write it to `dst`
-8. OracleGPU DMA-writes `completion_flag_addr = 1`.
-9. OracleGPU updates status and stats.
-
-Important implementation note:
-
-- Input segments are used only to generate memory-system traffic.
-- Input payload content is not consumed semantically.
-- For `ZERO_FILL` and `PATTERN_FILL`, the read data is ignored after traffic is
-  generated.
-
-## Stats and MMIO-visible counters
+### OracleGPU Stats and MMIO Counters
 
 Current stats in `OracleGPUStats`:
 
@@ -118,7 +100,7 @@ Current stats in `OracleGPUStats`:
 - `completedCount`
 - `invalidCommandCount`
 
-MMIO readback registers currently expose:
+MMIO readback registers expose:
 
 - descriptor address low/high
 - status
@@ -129,12 +111,13 @@ MMIO readback registers currently expose:
 - `genericCommandCount`
 - `invalidCommandCount`
 
-## Guest tests
+### OracleGPU Guest Tests
 
 Guest test sources:
 
 - `tests/test-progs/oracle-gpu/src/oracle_gpu_fs_test.c`
 - `tests/test-progs/oracle-gpu/src/oracle_gpu_generic_test.c`
+- `tests/test-progs/oracle-gpu/src/oracle_gpu_cxl_pcm_test.c`
 - `tests/test-progs/oracle-gpu/src/Makefile`
 - `tests/test-progs/oracle-gpu/oracle_gpu_user/oracle_gpu_runtime_test.c`
 
@@ -142,108 +125,21 @@ Generated binaries:
 
 - `tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_fs_test`
 - `tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_generic_test`
+- `tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_cxl_pcm_test`
 - `tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_runtime_test`
 
-### Smoke test
+Do not use `tests/test-progs/oracle-gpu/src/oracle_gpu_cxl_pcm_test` as a
+binary path. That `src/` directory binary was a redundant implicit-make output
+and has been removed. The official output is under `bin/x86/linux/`.
 
-Purpose:
+Build command:
 
-- Preserve the original end-to-end OracleGPU smoke path.
-- Validate that the refactor did not break command fetch, DMA, completion, or
-  guest execution.
+```bash
+make -C tests/test-progs/oracle-gpu/src
+make -C tests/test-progs/oracle-gpu/oracle_gpu_user
+```
 
-Current behavior:
-
-- Uses the new generic descriptor.
-- Uses `num_inputs = 1`.
-- Uses `COPY_ORACLE`.
-- `compute_latency_ns = 500`.
-
-Expected success string:
-
-- `OracleGPU FS smoke test passed: 'oracle-gpu-fs-smoke'`
-
-### Generic test
-
-Purpose:
-
-- Validate the new generic multi-input descriptor and MMIO stats.
-
-Current behavior:
-
-- Uses `num_inputs = 3`.
-- Uses 3 independent input buffers.
-- Uses `PATTERN_FILL`.
-- `compute_latency_ns = 2000`.
-- Verifies output buffer contents.
-- Verifies completion flag.
-- Verifies MMIO counters.
-
-Expected guest output:
-
-- `expected read bytes: 392`
-- `expected write bytes: 132`
-- `command count: 1`
-- `generic command count: 1`
-- `dma read bytes: 392`
-- `dma write bytes: 132`
-- `completed count: 1`
-- `invalid command count: 0`
-- `OracleGPU generic test passed with 3 inputs`
-
-Read/write byte math for the generic test:
-
-- Descriptor read: 200 bytes
-- Input reads: 64 + 96 + 32 = 192 bytes
-- Total DMA read bytes: 392 bytes
-- Output write: 128 bytes
-- Completion flag write: 4 bytes
-- Total DMA write bytes: 132 bytes
-
-### Guest-side runtime shim test
-
-Purpose:
-
-- Validate the new guest-side OracleGPU runtime shim.
-- Ensure user programs can submit generic OracleGPU commands through a C API
-  instead of hand-writing the command descriptor or MMIO doorbell sequence.
-- Validate the rootfs-installed binary path, not only host-side binary
-  injection.
-
-Current behavior:
-
-- Uses `num_inputs = 3`.
-- Uses 3 independent input buffers.
-- Uses `PATTERN_FILL`.
-- `compute_latency_ns = 1500`.
-- Maps scratch buffers from the reserved guest physical range
-  `0x30000000-0x30ffffff`.
-- Verifies output buffer contents.
-- Verifies completion flag and MMIO counters.
-- Runs from `/usr/local/bin/oracle_gpu_runtime_test` inside the guest image.
-
-Expected guest output:
-
-- `expected read bytes: 352`
-- `expected write bytes: 100`
-- `command count: 1`
-- `generic command count: 1`
-- `dma read bytes: 352`
-- `dma write bytes: 100`
-- `completed count: 1`
-- `invalid command count: 0`
-- `OracleGPU runtime test passed with 3 inputs`
-
-Read/write byte math for the runtime test:
-
-- Descriptor read: 200 bytes
-- Input reads: 48 + 80 + 24 = 152 bytes
-- Total DMA read bytes: 352 bytes
-- Output write: 96 bytes
-- Completion flag write: 4 bytes
-- Total DMA write bytes: 100 bytes
-
-## Guest-side runtime shim
+## Guest-Side OracleGPU Runtime Shim
 
 Runtime shim directory:
 
@@ -258,286 +154,441 @@ Files:
 - `Makefile`
 - `README.md`
 
-Important positioning:
-
-- This is a guest Linux user-space runtime library.
-- It is not a new gem5 SimObject.
-- It is not part of the host-side OracleGPU device model.
-- It is intended to be copied or installed into an FS-mode guest disk image or
-  rootfs.
-- It contains no attention/matmul/QKV/seq/head semantics.
+This is a guest Linux user-space runtime library. It is not a gem5 SimObject
+and is not part of the host-side OracleGPU model.
 
 ABI handling:
 
 - The device-owned ABI remains `src/dev/oracle_gpu_protocol.h`.
 - `oracle_gpu_user/oracle_gpu_abi.h` includes that header, or an installed copy
-  named `oracle_gpu_protocol.h`, to avoid maintaining a second command layout.
-- Any future ABI change must keep the device and guest runtime headers in sync.
+  named `oracle_gpu_protocol.h`, to avoid maintaining a second descriptor
+  layout.
 
-Public runtime API:
+Current runtime API:
 
-- `oracle_gpu_init(struct OracleGpuRuntime *rt,
-  const struct OracleGpuRuntimeConfig *config)`
-- `oracle_gpu_map_region(struct OracleGpuRuntime *rt, uint64_t phys_addr,
-  size_t bytes, struct OracleGpuMappedRegion *region)`
-- `oracle_gpu_unmap_region(struct OracleGpuMappedRegion *region)`
-- `oracle_gpu_submit_generic(struct OracleGpuRuntime *rt,
-  const struct OracleGpuInput *inputs, uint32_t num_inputs,
-  uint64_t dst_phys_addr, uint64_t dst_bytes, uint32_t result_policy,
-  uint64_t oracle_result_phys_addr, uint64_t oracle_result_bytes,
-  uint64_t compute_latency_ns, uint64_t user_tag,
-  struct OracleGpuSubmitResult *result)`
-- `oracle_gpu_close(struct OracleGpuRuntime *rt)`
-- `oracle_gpu_last_error(const struct OracleGpuRuntime *rt)`
+- `oracle_gpu_init`
+- `oracle_gpu_map_region`
+- `oracle_gpu_unmap_region`
+- `oracle_gpu_submit_generic`
+- `oracle_gpu_close`
+- `oracle_gpu_last_error`
 
-Runtime implementation summary:
+Current limitation:
 
-1. Opens `/dev/mem`.
-2. Maps the OracleGPU MMIO range.
-3. Maps a guest-physical descriptor region.
-4. Maps a guest-physical completion flag region.
-5. Builds an `OracleGPUCommand` descriptor internally.
-6. Writes descriptor address low/high MMIO registers.
-7. Rings the doorbell.
-8. Polls the completion flag until it becomes `1`, or until timeout/error.
-9. Returns MMIO-visible status and counters in `OracleGpuSubmitResult`.
+- OracleGPU descriptors use guest physical addresses.
+- There is no kernel driver or allocator for arbitrary framework-owned virtual
+  tensors yet.
+- Future framework integration needs a controlled physical allocator, kernel
+  driver, or explicit virtual-to-physical strategy.
 
-Current memory model:
-
-- Runtime inputs and outputs are guest physical addresses.
-- The helper `oracle_gpu_map_region()` maps fixed guest physical scratch
-  regions through `/dev/mem`.
-- This is sufficient for the current FS tests.
-- It is not yet a general virtual-address buffer API for `malloc()` or
-  framework-owned tensors.
-
-Important current limitation:
-
-- OracleGPU command descriptors consume guest physical addresses.
-- There is no kernel driver or allocator layer yet to translate arbitrary
-  user-space virtual addresses to guest physical addresses.
-- Future inference-framework integration will need either a kernel driver,
-  a controlled physical buffer allocator, or another explicit address
-  translation/allocation strategy.
-
-Runtime build outputs:
-
-- `tests/test-progs/oracle-gpu/lib/x86/linux/liboraclegpu.a`
-- `tests/test-progs/oracle-gpu/lib/x86/linux/liboraclegpu.so`
-- `tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_runtime_test`
-
-The runtime test binary is linked statically by default so it can run in guest
-images with older glibc versions. The shared library is still built for future
-guest programs that want dynamic linking.
-
-Runtime build command:
-
-```bash
-make -C tests/test-progs/oracle-gpu/oracle_gpu_user
-```
-
-Runtime rootfs install command, assuming the guest image root filesystem is
-mounted at `local_mnt/`:
+Runtime install command, assuming the guest root filesystem is mounted at
+`local_mnt/`:
 
 ```bash
 sudo make -C tests/test-progs/oracle-gpu/oracle_gpu_user \
   DESTDIR=/home/tyb/workspace/SimCXL/local_mnt install
 ```
 
-Installed guest paths:
+## CXL-PCM Overview
 
-- `/usr/local/include/oraclegpu/oracle_gpu_abi.h`
-- `/usr/local/include/oraclegpu/oracle_gpu_runtime.h`
-- `/usr/local/lib/liboraclegpu.a`
-- `/usr/local/lib/liboraclegpu.so`
-- `/usr/local/bin/oracle_gpu_runtime_test`
+CXL-PCM is modeled as a system-level CXL-attached memory tier in x86 FS mode.
+The current implementation intentionally avoids PCM cell modeling and focuses
+on system-visible timing, bandwidth, addressability, and stats.
 
-## FS run scripts
+Common CXL-PCM behavior:
 
-Run scripts:
+- Exposes an independent CXL-attached memory range.
+- Default base: `0x100000000`.
+- Default size: `1GiB`.
+- Linux sees this memory through E820 `range_type = 20`, resulting in NUMA
+  node 1 allocation in the current guest kernel.
+- The PCI CXL device BAR0 is a separate MMIO window assigned by Linux, usually
+  `0x140000000-0x17fffffff` for a 1GiB CXL memory size.
+- The guest tests allocate CXL memory through anonymous `mmap`, bind it to NUMA
+  node 1 with `mbind`, then use `/proc/self/pagemap` to obtain guest physical
+  addresses.
+- The tests do not rely on `/dev/cxl_mem0` for allocation.
+- CPU load/store and OracleGPU DMA both access the same CXL physical memory
+  range.
 
-- `configs/example/gem5_library/x86-oracle-gpu-fs.py`
-- `configs/example/gem5_library/x86-oracle-gpu-generic-fs.py`
-- `configs/example/gem5_library/x86-oracle-gpu-runtime-fs.py`
+Main board/config files:
 
-The smoke and generic scripts currently:
+- `src/python/gem5/components/boards/x86_board_oracle_gpu.py`
+- `configs/example/gem5_library/x86-oracle-gpu-cxl-pcm-fs.py`
 
-- Require X86
-- Boot with `CPUTypes.KVM`
-- Switch to `CPUTypes.TIMING`
-- Inject the guest test binary into the disk image at boot time
+The board owns the common CXL path:
 
-The runtime script currently:
+- Optional `cxl_pcm_memory` parameter.
+- `CXLMemCtrl` attached as a PCI CXL memory device.
+- `CXLBridge` for the non-Ruby path.
+- CXL memory range appended to E820 as `range_type = 20`.
+- CXL memory controllers appended to `self.memories` so the physical memory
+  system knows about them.
+- OracleGPU DMA port is connected through the same IO bus path and can reach
+  CXL memory.
 
-- Requires X86
-- Boots with `CPUTypes.KVM`
-- Switches to `CPUTypes.TIMING`
-- Runs `/usr/local/bin/oracle_gpu_runtime_test` from the guest image
-- Does not inject a host-side runtime test binary
+The FS config selects the backend:
 
-Current script resource paths are hard-coded:
+```bash
+--cxl-pcm-backend from_dram
+--cxl-pcm-backend from_nvm
+```
+
+Hard-coded resource paths in the current CXL-PCM FS script:
 
 - `KERNEL_PATH = /data/tyb/gem5/vmlinux`
 - `DISK_IMAGE_PATH = /data/tyb/gem5/parsec.img`
 
-If these paths do not exist on another machine, the next agent should either:
+These paths are intentionally hard-coded for the current local setup. Refactor
+them into arguments only if needed.
 
-- edit the script paths, or
-- refactor them into arguments or environment variables
+## CXL-PCM_from_dram
 
-## Verified results from the current phase
+This backend keeps the original custom CXL-PCM implementation but renames it to
+make clear that it is DRAM-path-derived.
 
-These runs were observed as passing:
+Files:
 
-- `m5out-oracle-smoke`
-- `m5out-oracle-generic`
-- `m5out` from `x86-oracle-gpu-runtime-fs.py`
+- `src/mem/CXLPCMFromDRAMMemory.py`
+- `src/mem/cxl_pcm_from_dram_memory.hh`
+- `src/mem/cxl_pcm_from_dram_memory.cc`
+- `src/python/gem5/components/memory/cxl_pcm_from_dram.py`
 
-Observed smoke result:
+Build registration:
 
-- guest serial output contains:
-  - `OracleGPU FS smoke test passed: 'oracle-gpu-fs-smoke'`
+- `src/mem/SConscript`
+  - `SimObject('CXLPCMFromDRAMMemory.py', ...)`
+  - `Source('cxl_pcm_from_dram_memory.cc')`
+  - `DebugFlag('CXLPCMFromDRAM')`
+- `src/python/SConscript`
+  - `gem5/components/memory/cxl_pcm_from_dram.py`
 
-Observed generic result:
+Class names:
 
-- guest serial output contains the expected stats values listed above
-- `m5out-oracle-generic/stats.txt` shows:
-  - `board.oracle_gpu.commandCount = 1`
-  - `board.oracle_gpu.genericCommandCount = 1`
-  - `board.oracle_gpu.dmaReadBytes = 392`
-  - `board.oracle_gpu.dmaWriteBytes = 132`
-  - `board.oracle_gpu.completedCount = 1`
-  - `board.oracle_gpu.invalidCommandCount = 0`
+- SimObject: `CXLPCMFromDRAMMemory`
+- Python memory wrapper: `SingleChannelCXLPCMFromDRAM`
 
-Observed runtime shim result:
+Modeling approach:
 
-- guest serial output contains:
-  - `expected read bytes: 352`
-  - `expected write bytes: 100`
-  - `command count: 1`
-  - `generic command count: 1`
-  - `dma read bytes: 352`
-  - `dma write bytes: 100`
-  - `completed count: 1`
-  - `invalid command count: 0`
-  - `OracleGPU runtime test passed with 3 inputs`
-- `m5out/stats.txt` shows:
-  - `board.oracle_gpu.commandCount = 1`
-  - `board.oracle_gpu.genericCommandCount = 1`
-  - `board.oracle_gpu.dmaReadBytes = 352`
-  - `board.oracle_gpu.dmaWriteBytes = 100`
-  - `board.oracle_gpu.completedCount = 1`
-  - `board.oracle_gpu.invalidCommandCount = 0`
+- Directly inherits from `AbstractMemory`.
+- Owns a `ResponsePort`.
+- Implements timing request handling internally.
+- Supports independently configurable:
+  - `read_latency`
+  - `write_latency`
+  - `latency_var`
+  - `read_bandwidth`
+  - `write_bandwidth`
+- Defaults:
+  - read latency: `150ns`
+  - write latency: `500ns`
+  - read bandwidth: `8GiB/s`
+  - write bandwidth: `2GiB/s`
+- Write latency is intentionally higher than read latency.
 
-Observed smoke stats:
+Stats:
+
+- `board.cxl_pcm_memory.module.pcmReadBytes`
+- `board.cxl_pcm_memory.module.pcmWriteBytes`
+- `board.cxl_pcm_memory.module.pcmReadRequests`
+- `board.cxl_pcm_memory.module.pcmWriteRequests`
+- `board.cxl_pcm_memory.module.totalPcmWrites`
+- AbstractMemory per-requestor stats, e.g.:
+  - `board.cxl_pcm_memory.module.bytesRead::oracle_gpu`
+  - `board.cxl_pcm_memory.module.bytesWritten::oracle_gpu`
+
+This backend is the easiest one to extend if future work needs PCM-specific
+custom counters with explicit names.
+
+## CXL-PCM_from_nvm
+
+This backend reuses gem5's native NVM media model under the same CXL-attached
+memory path.
+
+Files:
+
+- `src/python/gem5/components/memory/cxl_pcm_from_nvm.py`
+
+Build registration:
+
+- `src/python/SConscript`
+  - `gem5/components/memory/cxl_pcm_from_nvm.py`
+
+Class name:
+
+- Python memory wrapper: `SingleChannelCXLPCMFromNVM`
+
+Modeling approach:
+
+- Instantiates `NVM_2400_1x64`.
+- Connects it to a standard `MemCtrl`.
+- Uses the same board-level `CXLMemCtrl` and CXL memory range plumbing as
+  `from_dram`.
+- Configures:
+  - `tREAD` from `--cxl-pcm-read-latency`
+  - `tWRITE` from `--cxl-pcm-write-latency`
+  - `tBURST` from the lower of read/write bandwidths
+  - `static_frontend_latency`
+  - `static_backend_latency`
+- Defaults:
+  - read latency: `150ns`
+  - write latency: `500ns`
+  - read bandwidth: `8GiB/s`
+  - write bandwidth: `2GiB/s`
+
+Important limitation:
+
+- The NVM backend has separate read/write media latencies through
+  `tREAD/tWRITE`.
+- Bandwidth is currently approximated through a shared `tBURST` channel timing,
+  using the lower of read/write bandwidth. It does not yet enforce separate
+  read bandwidth and write bandwidth channels inside `NVMInterface`.
+
+Stats:
+
+- MemCtrl system-interface stats:
+  - `board.cxl_pcm_memory.mem_ctrl.readReqs`
+  - `board.cxl_pcm_memory.mem_ctrl.writeReqs`
+  - `board.cxl_pcm_memory.mem_ctrl.bytesReadSys`
+  - `board.cxl_pcm_memory.mem_ctrl.bytesWrittenSys`
+- NVM media stats:
+  - `board.cxl_pcm_memory.nvm.nvmBytesRead`
+  - `board.cxl_pcm_memory.nvm.nvmBytesWritten`
+  - `board.cxl_pcm_memory.nvm.readBursts`
+  - `board.cxl_pcm_memory.nvm.writeBursts`
+- AbstractMemory per-requestor stats on the NVM object:
+  - `board.cxl_pcm_memory.nvm.bytesRead::oracle_gpu`
+  - `board.cxl_pcm_memory.nvm.bytesWritten::oracle_gpu`
+  - `board.cxl_pcm_memory.nvm.numReads::oracle_gpu`
+  - `board.cxl_pcm_memory.nvm.numWrites::oracle_gpu`
+
+There is no `totalPcmWrites` stat with that exact name in `from_nvm`. Use one
+of these depending on the question:
+
+- `board.cxl_pcm_memory.mem_ctrl.bytesWrittenSys` for system-side accepted
+  write traffic.
+- `board.cxl_pcm_memory.nvm.nvmBytesWritten` for media-side NVM write traffic.
+- `board.cxl_pcm_memory.nvm.bytesWritten::oracle_gpu` for OracleGPU-written
+  bytes to the NVM-backed CXL range.
+
+## CXL-PCM Guest Tests
+
+CPU CXL-PCM memory test:
+
+- Source: `tests/test-progs/cxl-pcm/src/cxl_pcm_mem_test.c`
+- Binary: `tests/test-progs/cxl-pcm/bin/x86/linux/cxl_pcm_mem_test`
+
+OracleGPU CXL-PCM DMA test:
+
+- Source: `tests/test-progs/oracle-gpu/src/oracle_gpu_cxl_pcm_test.c`
+- Binary: `tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_cxl_pcm_test`
+
+Build commands:
+
+```bash
+make -C tests/test-progs/cxl-pcm/src
+make -C tests/test-progs/oracle-gpu/src
+```
+
+Guest image install commands for the current local image:
+
+```bash
+sudo mount -o loop,offset=$((2048*512)) /data/tyb/gem5/parsec.img local_mnt/
+sudo mkdir -p local_mnt/usr/local/bin
+sudo cp tests/test-progs/cxl-pcm/bin/x86/linux/cxl_pcm_mem_test \
+  local_mnt/usr/local/bin/
+sudo cp tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_cxl_pcm_test \
+  local_mnt/usr/local/bin/
+sudo chmod +x local_mnt/usr/local/bin/cxl_pcm_mem_test
+sudo chmod +x local_mnt/usr/local/bin/oracle_gpu_cxl_pcm_test
+sync
+sudo umount local_mnt/
+```
+
+The CXL-PCM FS script runs:
+
+```bash
+/usr/local/bin/cxl_pcm_mem_test 0x100000000 65536
+/usr/local/bin/oracle_gpu_cxl_pcm_test
+```
+
+Important cache-coherence note:
+
+- The OracleGPU CXL-PCM test uses `clflush` before DMA so OracleGPU reads fresh
+  input data.
+- It also flushes the destination buffer after the completion flag is observed
+  and before CPU-side validation. This is required for the NVM backend and is a
+  safer DMA test pattern generally.
+
+Expected guest success strings:
+
+- `CXL-PCM memory test passed`
+- `OracleGPU CXL-PCM DMA test passed`
+
+OracleGPU CXL-PCM DMA byte math:
+
+- Descriptor read from DRAM scratch: `200` bytes.
+- CXL input reads: `64 + 64 = 128` bytes.
+- Total OracleGPU DMA read bytes: `328`.
+- CXL output write: `128` bytes.
+- DRAM completion flag write: `4` bytes.
+- Total OracleGPU DMA write bytes: `132`.
+
+## CXL-PCM Build and Run Commands
+
+Because `CXLPCMMemory` was renamed to `CXLPCMFromDRAMMemory`, a full rebuild is
+recommended after pulling these changes:
+
+```bash
+scons -c build/X86
+scons build/X86/gem5.opt -j$(nproc)
+```
+
+Run `from_dram`:
+
+```bash
+sudo build/X86/gem5.opt -d m5out/cxl_pcm_from_dram \
+  configs/example/gem5_library/x86-oracle-gpu-cxl-pcm-fs.py \
+  --cxl-pcm-backend from_dram
+```
+
+Run `from_nvm`:
+
+```bash
+sudo build/X86/gem5.opt -d m5out/cxl_pcm_from_nvm \
+  configs/example/gem5_library/x86-oracle-gpu-cxl-pcm-fs.py \
+  --cxl-pcm-backend from_nvm
+```
+
+Useful success checks:
+
+```bash
+grep -R "CXL-PCM memory test passed\\|OracleGPU CXL-PCM DMA test passed" \
+  m5out/cxl_pcm_from_dram m5out/cxl_pcm_from_nvm
+```
+
+Useful `from_dram` stats check:
+
+```bash
+grep -E "board.cxl_pcm_memory.module.pcm|board.cxl_pcm_memory.module.bytes.*oracle_gpu|board.oracle_gpu" \
+  m5out/cxl_pcm_from_dram/stats.txt
+```
+
+Useful `from_nvm` stats check:
+
+```bash
+grep -E "board.cxl_pcm_memory.*(nvmBytesRead|nvmBytesWritten|readReqs|writeReqs|bytesReadSys|bytesWrittenSys|bytesRead::oracle_gpu|bytesWritten::oracle_gpu|numReads::oracle_gpu|numWrites::oracle_gpu)|board.oracle_gpu" \
+  m5out/cxl_pcm_from_nvm/stats.txt
+```
+
+## Verified CXL-PCM Results
+
+Both backends were observed passing after the guest image had the latest
+`oracle_gpu_cxl_pcm_test` binary.
+
+Common OracleGPU stats for both backends:
 
 - `board.oracle_gpu.commandCount = 1`
 - `board.oracle_gpu.genericCommandCount = 1`
-- `board.oracle_gpu.dmaReadBytes = 240`
-- `board.oracle_gpu.dmaWriteBytes = 24`
+- `board.oracle_gpu.dmaReadBytes = 328`
+- `board.oracle_gpu.dmaWriteBytes = 132`
 - `board.oracle_gpu.completedCount = 1`
 - `board.oracle_gpu.invalidCommandCount = 0`
 
-Smoke read/write byte math:
+Observed `from_dram` stats:
 
-- Descriptor read: 200 bytes
-- Input read: 20 bytes
-- Oracle result read: 20 bytes
-- Total read: 240 bytes
-- Output write: 20 bytes
-- Completion flag write: 4 bytes
-- Total write: 24 bytes
+- `board.cxl_pcm_memory.module.pcmReadBytes = 148096`
+- `board.cxl_pcm_memory.module.pcmWriteBytes = 65920`
+- `board.cxl_pcm_memory.module.pcmReadRequests = 2314`
+- `board.cxl_pcm_memory.module.pcmWriteRequests = 1030`
+- `board.cxl_pcm_memory.module.totalPcmWrites = 65920`
+- `board.cxl_pcm_memory.module.bytesRead::oracle_gpu = 128`
+- `board.cxl_pcm_memory.module.bytesWritten::oracle_gpu = 128`
 
-## Build and test notes
+Observed `from_nvm` stats:
 
-Guest tests compile with:
+- `board.cxl_pcm_memory.mem_ctrl.readReqs = 1935`
+- `board.cxl_pcm_memory.mem_ctrl.writeReqs = 1030`
+- `board.cxl_pcm_memory.mem_ctrl.bytesReadSys = 123840`
+- `board.cxl_pcm_memory.mem_ctrl.bytesWrittenSys = 65920`
+- `board.cxl_pcm_memory.nvm.nvmBytesRead = 89472`
+- `board.cxl_pcm_memory.nvm.nvmBytesWritten = 63360`
+- `board.cxl_pcm_memory.nvm.bytesRead::oracle_gpu = 128`
+- `board.cxl_pcm_memory.nvm.bytesWritten::oracle_gpu = 128`
+- `board.cxl_pcm_memory.nvm.numReads::oracle_gpu = 2`
+- `board.cxl_pcm_memory.nvm.numWrites::oracle_gpu = 2`
 
-- `make -C tests/test-progs/oracle-gpu/src`
-- `make -C tests/test-progs/oracle-gpu/oracle_gpu_user`
+The difference between `bytesReadSys` and `nvmBytesRead` is expected: MemCtrl
+system-side accounting and NVM media burst accounting are different views of
+traffic, and reads may be served from the write queue.
 
-Example run commands:
+## Existing OracleGPU FS Scripts
 
-```bash
-build/X86/gem5.opt --outdir m5out-oracle-smoke \
-  configs/example/gem5_library/x86-oracle-gpu-fs.py
+Other OracleGPU FS scripts still exist:
 
-build/X86/gem5.opt --outdir m5out-oracle-generic \
-  configs/example/gem5_library/x86-oracle-gpu-generic-fs.py
+- `configs/example/gem5_library/x86-oracle-gpu-fs.py`
+- `configs/example/gem5_library/x86-oracle-gpu-generic-fs.py`
+- `configs/example/gem5_library/x86-oracle-gpu-runtime-fs.py`
+- `configs/example/gem5_library/x86-oracle-gpu-cxl-pcm-fs.py`
 
-build/X86/gem5.opt --outdir m5out-oracle-runtime \
-  configs/example/gem5_library/x86-oracle-gpu-runtime-fs.py
-```
+The smoke and generic scripts inject guest test binaries at boot. The runtime
+and CXL-PCM scripts expect `/usr/local/bin/...` binaries inside the guest image.
 
-Useful debug run:
+Previously observed OracleGPU-only results:
 
-```bash
-build/X86/gem5.opt \
-  --debug-flags=OracleGPU \
-  --debug-file=oracle_gpu.trace \
-  --outdir m5out-oracle-generic-debug \
-  configs/example/gem5_library/x86-oracle-gpu-generic-fs.py
-```
+- Smoke test:
+  - `OracleGPU FS smoke test passed: 'oracle-gpu-fs-smoke'`
+  - `dmaReadBytes = 240`
+  - `dmaWriteBytes = 24`
+- Generic test:
+  - `OracleGPU generic test passed with 3 inputs`
+  - `dmaReadBytes = 392`
+  - `dmaWriteBytes = 132`
+- Runtime shim test:
+  - `OracleGPU runtime test passed with 3 inputs`
+  - `dmaReadBytes = 352`
+  - `dmaWriteBytes = 100`
 
-## What is implemented vs what is only partially verified
+## Warnings That Were Seen and Considered Harmless
 
-Implemented:
+These appeared in successful runs and do not indicate current test failure:
 
-- Multi-input generic command descriptor
-- Generic DMA-read traffic generation
-- Compute delay scheduling
-- `ZERO_FILL`
-- `PATTERN_FILL`
-- `COPY_ORACLE`
-- Completion flag writeback
-- New stats and MMIO counters
-- Preserved smoke path
-- New generic test path
-- Guest-side OracleGPU runtime shim
-- Runtime static library and shared library build
-- Rootfs install target for runtime headers, libraries, and test binary
-- Runtime FS test path using guest-installed `/usr/local/bin/oracle_gpu_runtime_test`
+- `PowerState: Already in the requested power state, request ignored`
+- `instruction 'fwait' unimplemented`
+- `User-specified generator/function list for the exit event 'exit' has ended`
+- `hack: Pretending totalOps is equivalent to totalInsts()`
+- CXL PCI message: `can't find IRQ for PCI INT A; probably buggy MP table`
 
-Not yet explicitly verified with a dedicated experiment:
+## Recommended Next Steps
 
-- A standalone `ZERO_FILL` guest test case
-- A dedicated before/after timing experiment proving that different
-  `compute_latency_ns` values measurably change simulated time
-- Dynamic loading of `liboraclegpu.so` by a non-static guest test program
+Near-term engineering cleanup:
 
-Note:
+1. Decide whether to commit binary test outputs or keep only sources plus build
+   instructions. The current tree includes generated guest binaries under
+   `tests/test-progs/.../bin/x86/linux/`.
+2. Add a dedicated timing experiment that changes CXL-PCM latency/bandwidth
+   parameters and compares simulated time.
+3. Add a dedicated `ZERO_FILL` OracleGPU test.
+4. Add a dynamic-link test for `liboraclegpu.so` if shared-library deployment
+   matters.
+5. Consider making kernel/disk image paths configurable if this will run on
+   machines other than the current `/data/tyb/gem5/...` setup.
 
-- `compute_latency_ns` is already implemented correctly in the device path.
-- It is just not separately quantified by a dedicated acceptance test yet.
-- The current runtime test binary is static, so it validates the runtime API and
-  guest-installed binary path, but not the guest dynamic loader path for
-  `liboraclegpu.so`.
+Potential future CXL-PCM work:
 
-## Recommended next steps for the next Codex agent
+1. If strict separate read bandwidth and write bandwidth are required for
+   `from_nvm`, extend `NVMInterface`/`MemCtrl` rather than only setting shared
+   `tBURST`.
+2. If endurance analysis should use one uniform stat name across both backends,
+   add explicit PCM alias stats to `from_nvm`.
+3. Add regression tests that grep for both CPU and OracleGPU CXL stats.
+4. Keep `range_type = 20`; do not revert to reserved `range_type = 2`. The
+   current tests depend on Linux exposing the CXL memory as a NUMA memory node.
 
-1. Add a standalone `ZERO_FILL` runtime or guest test.
-2. Add a dedicated `compute_latency_ns` timing validation test.
-3. Add a dynamic-link test for `liboraclegpu.so` if shared-library deployment
-   matters for the next integration step.
-4. Consider making kernel/disk image paths configurable.
-5. Consider making runtime scratch addresses configurable instead of fixed in
-   `oracle_gpu_runtime_test.c`.
-6. Plan a buffer-management story for future framework integration:
-   - kernel driver
-   - controlled guest-physical allocator
-   - or another explicit virtual-to-physical address path
-7. If needed, add a non-KVM variant of the FS run scripts for environments
-   without `/dev/kvm`.
-8. If desired, expose more per-command observability:
-   - current `compute_latency_ns`
-   - current `user_tag`
-   - maybe a command error code register instead of only incrementing
-     `invalidCommandCount`
+Out of scope until explicitly requested:
 
-## Short status summary
-
-Phase B is functionally in place and passing the main end-to-end checks.
-OracleGPU now behaves as a generic GPU-operation proxy with multi-input DMA
-traffic generation, compute delay, configurable output policy, completion
-writeback, expanded stats, and a guest-side C runtime shim. The main remaining
-work is stronger test coverage, dynamic-library validation if needed, and a
-real buffer-management strategy for future inference-framework integration.
+- LLM-like KV offload baseline.
+- Inference framework integration.
+- Attention-specific OracleGPU commands.
+- Near-memory attention.
+- PCM cell physics or wear leveling.

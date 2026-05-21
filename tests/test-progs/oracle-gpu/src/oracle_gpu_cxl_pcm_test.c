@@ -252,6 +252,7 @@ main(void)
         }
     }
 
+    flush_range(dst, DST_BYTES);
     if (check_pattern(dst, DST_BYTES, ORACLE_GPU_PATTERN_BYTE) != 0) {
         return 3;
     }

@@ -25,7 +25,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from .hbm import HBM2Stack
-from .cxl_pcm import SingleChannelCXLPCM
+from .cxl_pcm_from_dram import SingleChannelCXLPCMFromDRAM
+from .cxl_pcm_from_nvm import SingleChannelCXLPCMFromNVM
 from .multi_channel import (
     DualChannelDDR3_1600,
     DualChannelDDR3_2133,

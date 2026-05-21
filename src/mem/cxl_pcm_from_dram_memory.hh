@@ -3,15 +3,15 @@
  * All rights reserved.
  */
 
-#ifndef __MEM_CXL_PCM_MEMORY_HH__
-#define __MEM_CXL_PCM_MEMORY_HH__
+#ifndef __MEM_CXL_PCM_FROM_DRAM_MEMORY_HH__
+#define __MEM_CXL_PCM_FROM_DRAM_MEMORY_HH__
 
 #include <list>
 
 #include "base/statistics.hh"
 #include "mem/abstract_mem.hh"
 #include "mem/port.hh"
-#include "params/CXLPCMMemory.hh"
+#include "params/CXLPCMFromDRAMMemory.hh"
 
 namespace gem5
 {
@@ -19,7 +19,7 @@ namespace gem5
 namespace memory
 {
 
-class CXLPCMMemory : public AbstractMemory
+class CXLPCMFromDRAMMemory : public AbstractMemory
 {
   private:
     class DeferredPacket
@@ -35,10 +35,11 @@ class CXLPCMMemory : public AbstractMemory
     class MemoryPort : public ResponsePort
     {
       private:
-        CXLPCMMemory& mem;
+        CXLPCMFromDRAMMemory& mem;
 
       public:
-        MemoryPort(const std::string& _name, CXLPCMMemory& _memory);
+        MemoryPort(const std::string& _name,
+                   CXLPCMFromDRAMMemory& _memory);
 
       protected:
         Tick recvAtomic(PacketPtr pkt) override;
@@ -54,7 +55,7 @@ class CXLPCMMemory : public AbstractMemory
 
     struct PCMStats : public statistics::Group
     {
-        explicit PCMStats(CXLPCMMemory &mem);
+        explicit PCMStats(CXLPCMFromDRAMMemory &mem);
 
         statistics::Scalar pcmReadBytes;
         statistics::Scalar pcmWriteBytes;
@@ -91,7 +92,7 @@ class CXLPCMMemory : public AbstractMemory
     std::unique_ptr<Packet> pendingDelete;
 
   public:
-    CXLPCMMemory(const CXLPCMMemoryParams &p);
+    CXLPCMFromDRAMMemory(const CXLPCMFromDRAMMemoryParams &p);
 
     DrainState drain() override;
 
@@ -112,4 +113,4 @@ class CXLPCMMemory : public AbstractMemory
 } // namespace memory
 } // namespace gem5
 
-#endif // __MEM_CXL_PCM_MEMORY_HH__
+#endif // __MEM_CXL_PCM_FROM_DRAM_MEMORY_HH__

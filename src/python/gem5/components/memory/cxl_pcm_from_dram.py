@@ -1,6 +1,6 @@
 from typing import List, Sequence, Tuple
 
-from m5.objects import AddrRange, CXLPCMMemory, Port
+from m5.objects import AddrRange, CXLPCMFromDRAMMemory, Port
 from m5.util.convert import toMemorySize
 
 from ...utils.override import overrides
@@ -8,7 +8,7 @@ from ..boards.abstract_board import AbstractBoard
 from .abstract_memory_system import AbstractMemorySystem
 
 
-class SingleChannelCXLPCM(AbstractMemorySystem):
+class SingleChannelCXLPCMFromDRAM(AbstractMemorySystem):
     def __init__(
         self,
         size: str = "1GiB",
@@ -22,7 +22,7 @@ class SingleChannelCXLPCM(AbstractMemorySystem):
 
         self._size_str = size
         self._size = toMemorySize(size)
-        self.module = CXLPCMMemory(
+        self.module = CXLPCMFromDRAMMemory(
             read_latency=read_latency,
             write_latency=write_latency,
             latency_var=latency_var,
@@ -39,7 +39,7 @@ class SingleChannelCXLPCM(AbstractMemorySystem):
         return [(self.module.range, self.module.port)]
 
     @overrides(AbstractMemorySystem)
-    def get_memory_controllers(self) -> List[CXLPCMMemory]:
+    def get_memory_controllers(self) -> List[CXLPCMFromDRAMMemory]:
         return [self.module]
 
     @overrides(AbstractMemorySystem)
