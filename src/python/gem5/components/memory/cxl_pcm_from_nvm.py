@@ -1,6 +1,6 @@
 from typing import List, Sequence, Tuple
 
-from m5.objects import AddrRange, MemCtrl, NVM_2400_1x64, Port
+from m5.objects import AddrRange, CXLPCMFromNVM_2400_1x64, MemCtrl, Port
 from m5.util.convert import toMemoryBandwidth, toMemorySize
 
 from ...utils.override import overrides
@@ -23,14 +23,20 @@ class SingleChannelCXLPCMFromNVM(AbstractMemorySystem):
 
         self._size_str = size
         self._size = toMemorySize(size)
-        self.nvm = NVM_2400_1x64(
+        self.nvm = CXLPCMFromNVM_2400_1x64(
             tREAD=read_latency,
             tWRITE=write_latency,
             tBURST=self._bandwidth_to_tburst(
-                min(
+                max(
                     toMemoryBandwidth(read_bandwidth),
                     toMemoryBandwidth(write_bandwidth),
                 )
+            ),
+            tREAD_BURST=self._bandwidth_to_tburst(
+                toMemoryBandwidth(read_bandwidth)
+            ),
+            tWRITE_BURST=self._bandwidth_to_tburst(
+                toMemoryBandwidth(write_bandwidth)
             ),
         )
         self.mem_ctrl = MemCtrl(
@@ -42,12 +48,12 @@ class SingleChannelCXLPCMFromNVM(AbstractMemorySystem):
     @staticmethod
     def _bandwidth_to_tburst(bandwidth: float) -> str:
         device_bus_width = getattr(
-            NVM_2400_1x64.device_bus_width, "value",
-            NVM_2400_1x64.device_bus_width,
+            CXLPCMFromNVM_2400_1x64.device_bus_width, "value",
+            CXLPCMFromNVM_2400_1x64.device_bus_width,
         )
         burst_length = getattr(
-            NVM_2400_1x64.burst_length, "value",
-            NVM_2400_1x64.burst_length,
+            CXLPCMFromNVM_2400_1x64.burst_length, "value",
+            CXLPCMFromNVM_2400_1x64.burst_length,
         )
         burst_bytes = (
             int(device_bus_width) * int(burst_length) // 8

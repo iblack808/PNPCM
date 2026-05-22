@@ -1,5 +1,7 @@
 # OracleGPU and CXL-PCM Handoff
 
+Last updated: 2026-05-22
+
 This document records the current SimCXL state after the OracleGPU Phase B
 generic-command work and the first system-level CXL-PCM memory tier work. It is
 intended for a future Codex agent or engineer to continue without re-discovering
@@ -11,10 +13,24 @@ Current status:
 - A guest-side OracleGPU runtime shim exists and has passed FS guest tests.
 - CXL-PCM exists in two selectable backend variants:
   - `CXL-PCM_from_dram`: custom DRAM-path-derived memory object.
-  - `CXL-PCM_from_nvm`: gem5 NVMInterface/MemCtrl-derived backend.
+  - `CXL-PCM_from_nvm`: CXL-PCM-specific NVMInterface/MemCtrl-derived backend.
 - Both CXL-PCM variants have passed:
   - CPU load/store CXL-PCM test.
   - OracleGPU DMA read/write CXL-PCM test.
+- Both CXL-PCM variants support independently configurable read/write latency
+  and independently configurable read/write bandwidth.
+- Native gem5 `DRAMInterface` and `NVMInterface` are intentionally restored and
+  left unchanged. CXL-PCM-specific behavior lives in CXL-PCM-specific files.
+
+Current accepted baseline:
+
+- x86 FS boots with DDR plus a separate 1GiB CXL-PCM range at `0x100000000`.
+- Linux exposes the CXL range as NUMA node 1 through E820 `range_type = 20`.
+- CPU guest test accesses the CXL-PCM range and updates CXL-PCM stats.
+- OracleGPU DMA reads and writes the same CXL-PCM range and updates both
+  OracleGPU DMA stats and CXL-PCM per-requestor stats.
+- `from_dram` and `from_nvm` are selected only by
+  `--cxl-pcm-backend from_dram|from_nvm`.
 
 Deliberately not implemented:
 
@@ -216,6 +232,26 @@ Main board/config files:
 - `src/python/gem5/components/boards/x86_board_oracle_gpu.py`
 - `configs/example/gem5_library/x86-oracle-gpu-cxl-pcm-fs.py`
 
+Current CXL-PCM-specific source files:
+
+- `src/mem/CXLPCMFromDRAMMemory.py`
+- `src/mem/cxl_pcm_from_dram_memory.hh`
+- `src/mem/cxl_pcm_from_dram_memory.cc`
+- `src/mem/CXLPCMFromNVMInterface.py`
+- `src/mem/cxl_pcm_from_nvm_interface.hh`
+- `src/mem/cxl_pcm_from_nvm_interface.cc`
+- `src/python/gem5/components/memory/cxl_pcm_from_dram.py`
+- `src/python/gem5/components/memory/cxl_pcm_from_nvm.py`
+
+Files that should remain unmodified for this CXL-PCM modeling work:
+
+- `src/mem/DRAMInterface.py`
+- `src/mem/dram_interface.hh`
+- `src/mem/dram_interface.cc`
+- `src/mem/NVMInterface.py`
+- `src/mem/nvm_interface.hh`
+- `src/mem/nvm_interface.cc`
+
 The board owns the common CXL path:
 
 - Optional `cxl_pcm_memory` parameter.
@@ -238,9 +274,16 @@ Hard-coded resource paths in the current CXL-PCM FS script:
 
 - `KERNEL_PATH = /data/tyb/gem5/vmlinux`
 - `DISK_IMAGE_PATH = /data/tyb/gem5/parsec.img`
+- `CXL_PCM_SIZE = "1GiB"`
+- `CXL_PCM_BASE = 0x100000000`
+- `CXL_PCM_READ_LATENCY = "150ns"`
+- `CXL_PCM_WRITE_LATENCY = "500ns"`
+- `CXL_PCM_READ_BANDWIDTH = "8GiB/s"`
+- `CXL_PCM_WRITE_BANDWIDTH = "2GiB/s"`
+- `CXL_PCM_TEST_BYTES = 64 * 1024`
 
-These paths are intentionally hard-coded for the current local setup. Refactor
-them into arguments only if needed.
+These values are intentionally hard-coded for the current local setup and test
+baseline. Refactor them into arguments only if needed.
 
 ## CXL-PCM_from_dram
 
@@ -303,31 +346,44 @@ custom counters with explicit names.
 ## CXL-PCM_from_nvm
 
 This backend reuses gem5's native NVM media model under the same CXL-attached
-memory path.
+memory path, but through a CXL-PCM-specific copy of the NVM interface. The
+native gem5 `NVMInterface` and `DRAMInterface` files are intentionally left
+unchanged.
 
 Files:
 
+- `src/mem/CXLPCMFromNVMInterface.py`
+- `src/mem/cxl_pcm_from_nvm_interface.hh`
+- `src/mem/cxl_pcm_from_nvm_interface.cc`
 - `src/python/gem5/components/memory/cxl_pcm_from_nvm.py`
 
 Build registration:
 
+- `src/mem/SConscript`
+  - `SimObject('CXLPCMFromNVMInterface.py', ...)`
+  - `Source('cxl_pcm_from_nvm_interface.cc')`
 - `src/python/SConscript`
   - `gem5/components/memory/cxl_pcm_from_nvm.py`
 
 Class name:
 
+- SimObject: `CXLPCMFromNVMInterface`
+- media preset: `CXLPCMFromNVM_2400_1x64`
 - Python memory wrapper: `SingleChannelCXLPCMFromNVM`
 
 Modeling approach:
 
-- Instantiates `NVM_2400_1x64`.
+- Instantiates `CXLPCMFromNVM_2400_1x64`.
 - Connects it to a standard `MemCtrl`.
 - Uses the same board-level `CXLMemCtrl` and CXL memory range plumbing as
   `from_dram`.
 - Configures:
-  - `tREAD` from `--cxl-pcm-read-latency`
-  - `tWRITE` from `--cxl-pcm-write-latency`
-  - `tBURST` from the lower of read/write bandwidths
+  - `tREAD` from `CXL_PCM_READ_LATENCY`
+  - `tWRITE` from `CXL_PCM_WRITE_LATENCY`
+  - `tREAD_BURST` from the configured read bandwidth
+  - `tWRITE_BURST` from the configured write bandwidth
+  - `tBURST` from the faster of the two bandwidths for legacy/default
+    bookkeeping
   - `static_frontend_latency`
   - `static_backend_latency`
 - Defaults:
@@ -336,13 +392,21 @@ Modeling approach:
   - read bandwidth: `8GiB/s`
   - write bandwidth: `2GiB/s`
 
-Important limitation:
+Important bandwidth implementation note:
 
-- The NVM backend has separate read/write media latencies through
+- The NVM backend now has separate read/write media latencies through
   `tREAD/tWRITE`.
-- Bandwidth is currently approximated through a shared `tBURST` channel timing,
-  using the lower of read/write bandwidth. It does not yet enforce separate
-  read bandwidth and write bandwidth channels inside `NVMInterface`.
+- It also has separate data burst durations through `tREAD_BURST` and
+  `tWRITE_BURST`.
+- `CXLPCMFromNVMInterface::doBurstAccess()` selects the burst duration by
+  request type, so CXL-PCM_from_nvm read bandwidth and write bandwidth are
+  independently configurable.
+- `CXLPCMFromNVMInterface::commandOffset()` returns the smaller of the two
+  burst durations so the controller scheduler wakes early enough for the
+  faster direction.
+- The native gem5 `NVMInterface` does not have these extra burst parameters.
+  Do not add them back to native NVM unless the project explicitly decides to
+  change global gem5 behavior.
 
 Stats:
 
@@ -436,8 +500,9 @@ OracleGPU CXL-PCM DMA byte math:
 
 ## CXL-PCM Build and Run Commands
 
-Because `CXLPCMMemory` was renamed to `CXLPCMFromDRAMMemory`, a full rebuild is
-recommended after pulling these changes:
+Because `CXLPCMMemory` was renamed to `CXLPCMFromDRAMMemory` and
+`CXLPCMFromNVMInterface` is a new C++ SimObject, rebuild gem5 before running the
+CXL-PCM FS tests:
 
 ```bash
 scons -c build/X86
@@ -481,10 +546,49 @@ grep -E "board.cxl_pcm_memory.*(nvmBytesRead|nvmBytesWritten|readReqs|writeReqs|
   m5out/cxl_pcm_from_nvm/stats.txt
 ```
 
-## Verified CXL-PCM Results
+Useful config checks:
+
+```bash
+grep -n -A30 "\[board.cxl_pcm_memory.module\]" \
+  m5out/cxl_pcm_from_dram/config.ini
+grep -n -A40 "\[board.cxl_pcm_memory.nvm\]" \
+  m5out/cxl_pcm_from_nvm/config.ini
+```
+
+Expected backend types:
+
+- `from_dram`: `type=CXLPCMFromDRAMMemory`
+- `from_nvm`: `type=CXLPCMFromNVMInterface`
+
+Expected default asymmetric bandwidth/timing facts:
+
+- `from_dram`: `read_latency=150000`, `write_latency=500000`
+- `from_dram`: `read_bandwidth=116`, `write_bandwidth=466`
+- `from_nvm`: `tREAD=150000`, `tWRITE=500000`
+- `from_nvm`: `tREAD_BURST=7451`, `tWRITE_BURST=29802`
+
+## CXL-PCM Verification Status
 
 Both backends were observed passing after the guest image had the latest
-`oracle_gpu_cxl_pcm_test` binary.
+`oracle_gpu_cxl_pcm_test` binary. After the final cleanup that restored native
+`DRAMInterface`/`NVMInterface` and introduced the dedicated
+`CXLPCMFromNVMInterface`, both commands above were rerun successfully.
+
+Latest checked output directories:
+
+- `m5out/cxl_pcm_from_dram`
+- `m5out/cxl_pcm_from_nvm`
+
+Latest checked config facts:
+
+- `from_dram`: `board.cxl_pcm_memory.module.type = CXLPCMFromDRAMMemory`
+- `from_dram`: CXL-PCM range `0x100000000-0x140000000`
+- `from_dram`: `read_latency = 150000`, `write_latency = 500000`
+- `from_dram`: `read_bandwidth = 116`, `write_bandwidth = 466`
+- `from_nvm`: `board.cxl_pcm_memory.nvm.type = CXLPCMFromNVMInterface`
+- `from_nvm`: CXL-PCM range `0x100000000-0x140000000`
+- `from_nvm`: `tREAD = 150000`, `tWRITE = 500000`
+- `from_nvm`: `tREAD_BURST = 7451`, `tWRITE_BURST = 29802`
 
 Common OracleGPU stats for both backends:
 
@@ -495,23 +599,25 @@ Common OracleGPU stats for both backends:
 - `board.oracle_gpu.completedCount = 1`
 - `board.oracle_gpu.invalidCommandCount = 0`
 
-Observed `from_dram` stats:
+Latest observed `from_dram` stats:
 
-- `board.cxl_pcm_memory.module.pcmReadBytes = 148096`
+- `board.cxl_pcm_memory.module.pcmReadBytes = 163392`
 - `board.cxl_pcm_memory.module.pcmWriteBytes = 65920`
-- `board.cxl_pcm_memory.module.pcmReadRequests = 2314`
+- `board.cxl_pcm_memory.module.pcmReadRequests = 2553`
 - `board.cxl_pcm_memory.module.pcmWriteRequests = 1030`
 - `board.cxl_pcm_memory.module.totalPcmWrites = 65920`
 - `board.cxl_pcm_memory.module.bytesRead::oracle_gpu = 128`
 - `board.cxl_pcm_memory.module.bytesWritten::oracle_gpu = 128`
 
-Observed `from_nvm` stats:
+Latest observed `from_nvm` stats:
 
-- `board.cxl_pcm_memory.mem_ctrl.readReqs = 1935`
+- `board.cxl_pcm_memory.mem_ctrl.readReqs = 2260`
 - `board.cxl_pcm_memory.mem_ctrl.writeReqs = 1030`
-- `board.cxl_pcm_memory.mem_ctrl.bytesReadSys = 123840`
+- `board.cxl_pcm_memory.mem_ctrl.bytesReadSys = 144640`
 - `board.cxl_pcm_memory.mem_ctrl.bytesWrittenSys = 65920`
-- `board.cxl_pcm_memory.nvm.nvmBytesRead = 89472`
+- `board.cxl_pcm_memory.nvm.readBursts = 1818`
+- `board.cxl_pcm_memory.nvm.writeBursts = 990`
+- `board.cxl_pcm_memory.nvm.nvmBytesRead = 116352`
 - `board.cxl_pcm_memory.nvm.nvmBytesWritten = 63360`
 - `board.cxl_pcm_memory.nvm.bytesRead::oracle_gpu = 128`
 - `board.cxl_pcm_memory.nvm.bytesWritten::oracle_gpu = 128`
@@ -521,6 +627,34 @@ Observed `from_nvm` stats:
 The difference between `bytesReadSys` and `nvmBytesRead` is expected: MemCtrl
 system-side accounting and NVM media burst accounting are different views of
 traffic, and reads may be served from the write queue.
+
+Acceptance checklist status:
+
+- CXL-attached memory range: done.
+- Configurable capacity: done through `CXL_PCM_SIZE`.
+- Configurable read/write latency: done for both backends.
+- Configurable read/write bandwidth: done for both backends.
+- Read/write asymmetry with slower default writes: done.
+- PCM read/write byte stats: done.
+  - `from_dram` has explicit PCM stats.
+  - `from_nvm` uses MemCtrl and NVM media stats.
+- PCM read/write request stats: done.
+- Total PCM writes for endurance analysis: done explicitly for `from_dram`;
+  use `nvmBytesWritten` or `bytesWrittenSys` for `from_nvm`.
+- CPU load/store access: tested and passing.
+- OracleGPU DMA read/write access: tested and passing.
+- DDR and CXL-PCM stats distinguishable: done by separate stat paths.
+- Existing OracleGPU smoke/generic/runtime paths: not intentionally changed by
+  the CXL-PCM backend split; previous observed results are recorded below.
+
+Timing sensitivity status:
+
+- The successful baseline runs used asymmetric defaults
+  (`8GiB/s` read, `2GiB/s` write; `150ns` read, `500ns` write).
+- Config inspection confirms the asymmetric values reach both backends.
+- A dedicated parameter sweep that compares simulated time under different
+  latency/bandwidth constants has not yet been added. This is the next step if
+  quantitative timing sensitivity needs to be shown in a reproducible script.
 
 ## Existing OracleGPU FS Scripts
 
@@ -576,12 +710,11 @@ Near-term engineering cleanup:
 
 Potential future CXL-PCM work:
 
-1. If strict separate read bandwidth and write bandwidth are required for
-   `from_nvm`, extend `NVMInterface`/`MemCtrl` rather than only setting shared
-   `tBURST`.
-2. If endurance analysis should use one uniform stat name across both backends,
+1. If endurance analysis should use one uniform stat name across both backends,
    add explicit PCM alias stats to `from_nvm`.
-3. Add regression tests that grep for both CPU and OracleGPU CXL stats.
+2. Add regression tests that grep for both CPU and OracleGPU CXL stats.
+3. Add a dedicated timing experiment that separately sweeps
+   `CXL_PCM_READ_BANDWIDTH` and `CXL_PCM_WRITE_BANDWIDTH` for `from_nvm`.
 4. Keep `range_type = 20`; do not revert to reserved `range_type = 2`. The
    current tests depend on Linux exposing the CXL memory as a NUMA memory node.
 

@@ -27,6 +27,13 @@ requires(isa_required=ISA.X86)
 
 KERNEL_PATH = "/data/tyb/gem5/vmlinux"
 DISK_IMAGE_PATH = "/data/tyb/gem5/parsec.img"
+CXL_PCM_SIZE = "1GiB"
+CXL_PCM_BASE = 0x100000000
+CXL_PCM_READ_LATENCY = "150ns"
+CXL_PCM_WRITE_LATENCY = "500ns"
+CXL_PCM_READ_BANDWIDTH = "8GiB/s"
+CXL_PCM_WRITE_BANDWIDTH = "2GiB/s"
+CXL_PCM_TEST_BYTES = 64 * 1024
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BOARDS_SRC_PATH = REPO_ROOT / "src/python/gem5/components/boards"
@@ -39,17 +46,8 @@ from gem5.components.boards.x86_board_oracle_gpu import X86BoardOracleGPU
 parser = argparse.ArgumentParser(
     description="Run x86 FS with DDR, OracleGPU, and CXL-PCM memory."
 )
-parser.add_argument("--cxl-pcm-size", default="1GiB")
 parser.add_argument("--cxl-pcm-backend", choices=["from_dram", "from_nvm"],
                     default="from_dram")
-parser.add_argument("--cxl-pcm-base", type=lambda x: int(x, 0),
-                    default=0x100000000)
-parser.add_argument("--cxl-pcm-read-latency", default="150ns")
-parser.add_argument("--cxl-pcm-write-latency", default="500ns")
-parser.add_argument("--cxl-pcm-read-bandwidth", default="8GiB/s")
-parser.add_argument("--cxl-pcm-write-bandwidth", default="2GiB/s")
-parser.add_argument("--cxl-pcm-test-bytes", type=lambda x: int(x, 0),
-                    default=64 * 1024)
 args = parser.parse_args()
 
 DETAILED_CPU_TYPE = CPUTypes.TIMING
@@ -63,7 +61,7 @@ set -e
 if [ -x /sbin/m5 ]; then
     /sbin/m5 exit
 fi
-/usr/local/bin/cxl_pcm_mem_test {args.cxl_pcm_base:#x} {args.cxl_pcm_test_bytes}
+/usr/local/bin/cxl_pcm_mem_test {CXL_PCM_BASE:#x} {CXL_PCM_TEST_BYTES}
 /usr/local/bin/oracle_gpu_cxl_pcm_test
 /sbin/m5 exit
 exec /bin/sh
@@ -87,11 +85,11 @@ cxl_pcm_cls = {
     "from_nvm": SingleChannelCXLPCMFromNVM,
 }[args.cxl_pcm_backend]
 cxl_pcm = cxl_pcm_cls(
-    size=args.cxl_pcm_size,
-    read_latency=args.cxl_pcm_read_latency,
-    write_latency=args.cxl_pcm_write_latency,
-    read_bandwidth=args.cxl_pcm_read_bandwidth,
-    write_bandwidth=args.cxl_pcm_write_bandwidth,
+    size=CXL_PCM_SIZE,
+    read_latency=CXL_PCM_READ_LATENCY,
+    write_latency=CXL_PCM_WRITE_LATENCY,
+    read_bandwidth=CXL_PCM_READ_BANDWIDTH,
+    write_bandwidth=CXL_PCM_WRITE_BANDWIDTH,
 )
 
 processor = SimpleSwitchableProcessor(
@@ -111,7 +109,7 @@ board = X86BoardOracleGPU(
     memory=memory,
     cache_hierarchy=cache_hierarchy,
     cxl_pcm_memory=cxl_pcm,
-    cxl_pcm_base=args.cxl_pcm_base,
+    cxl_pcm_base=CXL_PCM_BASE,
 )
 
 board.set_kernel_disk_workload(
