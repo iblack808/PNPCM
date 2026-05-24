@@ -16,6 +16,7 @@ class SingleChannelCXLPCMFromDRAM(AbstractMemorySystem):
         write_latency: str = "500ns",
         read_bandwidth: str = "8GiB/s",
         write_bandwidth: str = "2GiB/s",
+        media_granularity: str = "128B",
         latency_var: str = "0ns",
     ) -> None:
         super().__init__()
@@ -28,6 +29,7 @@ class SingleChannelCXLPCMFromDRAM(AbstractMemorySystem):
             latency_var=latency_var,
             read_bandwidth=read_bandwidth,
             write_bandwidth=write_bandwidth,
+            media_granularity=media_granularity,
         )
 
     @overrides(AbstractMemorySystem)

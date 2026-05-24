@@ -105,7 +105,8 @@ class CXLPCMFromNVM_2400_1x64(CXLPCMFromNVMInterface):
     ranks_per_channel = 1
     banks_per_rank = 16
 
-    burst_length = 8
+    # 64-bit bus * BL16 = 128B internal PCM media granule.
+    burst_length = 16
 
     two_cycle_rdwr = True
 

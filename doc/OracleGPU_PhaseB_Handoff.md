@@ -1,6 +1,6 @@
 # OracleGPU and CXL-PCM Handoff
 
-Last updated: 2026-05-22
+Last updated: 2026-05-24
 
 This document records the current SimCXL state after the OracleGPU Phase B
 generic-command work and the first system-level CXL-PCM memory tier work. It is
@@ -19,6 +19,8 @@ Current status:
   - OracleGPU DMA read/write CXL-PCM test.
 - Both CXL-PCM variants support independently configurable read/write latency
   and independently configurable read/write bandwidth.
+- Both CXL-PCM variants now model a 128B internal PCM media read/write
+  granularity.
 - Native gem5 `DRAMInterface` and `NVMInterface` are intentionally restored and
   left unchanged. CXL-PCM-specific behavior lives in CXL-PCM-specific files.
 
@@ -281,6 +283,7 @@ Hard-coded resource paths in the current CXL-PCM FS script:
 - `CXL_PCM_READ_BANDWIDTH = "8GiB/s"`
 - `CXL_PCM_WRITE_BANDWIDTH = "2GiB/s"`
 - `CXL_PCM_TEST_BYTES = 64 * 1024`
+- `CXL-PCM internal media granularity = 128B`
 
 These values are intentionally hard-coded for the current local setup and test
 baseline. Refactor them into arguments only if needed.
@@ -322,12 +325,17 @@ Modeling approach:
   - `latency_var`
   - `read_bandwidth`
   - `write_bandwidth`
+  - `media_granularity`
 - Defaults:
   - read latency: `150ns`
   - write latency: `500ns`
   - read bandwidth: `8GiB/s`
   - write bandwidth: `2GiB/s`
+  - media granularity: `128B`
 - Write latency is intentionally higher than read latency.
+- CPU/DMA requests may still arrive as 64B cache-line-sized packets, but the
+  CXL-PCM media bandwidth occupancy and explicit PCM byte/write stats are
+  rounded up per request to the 128B media granule.
 
 Stats:
 
@@ -391,6 +399,8 @@ Modeling approach:
   - write latency: `500ns`
   - read bandwidth: `8GiB/s`
   - write bandwidth: `2GiB/s`
+  - media granularity: `128B`, implemented as `device_bus_width = 64` and
+    `burst_length = 16`
 
 Important bandwidth implementation note:
 
@@ -500,19 +510,20 @@ OracleGPU CXL-PCM DMA byte math:
 
 ## CXL-PCM Build and Run Commands
 
-Because `CXLPCMMemory` was renamed to `CXLPCMFromDRAMMemory` and
-`CXLPCMFromNVMInterface` is a new C++ SimObject, rebuild gem5 before running the
-CXL-PCM FS tests:
+Rebuild gem5 after changing any CXL-PCM SimObject or C++ implementation.
+Incremental build is normally sufficient:
 
 ```bash
-scons -c build/X86
 scons build/X86/gem5.opt -j$(nproc)
 ```
+
+Use `scons -c build/X86` only if stale generated SimObject code or build-cache
+state is suspected.
 
 Run `from_dram`:
 
 ```bash
-sudo build/X86/gem5.opt -d m5out/cxl_pcm_from_dram \
+sudo build/X86/gem5.opt -d m5out/cxl_pcm_from_dram_128b \
   configs/example/gem5_library/x86-oracle-gpu-cxl-pcm-fs.py \
   --cxl-pcm-backend from_dram
 ```
@@ -520,7 +531,7 @@ sudo build/X86/gem5.opt -d m5out/cxl_pcm_from_dram \
 Run `from_nvm`:
 
 ```bash
-sudo build/X86/gem5.opt -d m5out/cxl_pcm_from_nvm \
+sudo build/X86/gem5.opt -d m5out/cxl_pcm_from_nvm_128b \
   configs/example/gem5_library/x86-oracle-gpu-cxl-pcm-fs.py \
   --cxl-pcm-backend from_nvm
 ```
@@ -529,30 +540,30 @@ Useful success checks:
 
 ```bash
 grep -R "CXL-PCM memory test passed\\|OracleGPU CXL-PCM DMA test passed" \
-  m5out/cxl_pcm_from_dram m5out/cxl_pcm_from_nvm
+  m5out/cxl_pcm_from_dram_128b m5out/cxl_pcm_from_nvm_128b
 ```
 
 Useful `from_dram` stats check:
 
 ```bash
 grep -E "board.cxl_pcm_memory.module.pcm|board.cxl_pcm_memory.module.bytes.*oracle_gpu|board.oracle_gpu" \
-  m5out/cxl_pcm_from_dram/stats.txt
+  m5out/cxl_pcm_from_dram_128b/stats.txt
 ```
 
 Useful `from_nvm` stats check:
 
 ```bash
 grep -E "board.cxl_pcm_memory.*(nvmBytesRead|nvmBytesWritten|readReqs|writeReqs|bytesReadSys|bytesWrittenSys|bytesRead::oracle_gpu|bytesWritten::oracle_gpu|numReads::oracle_gpu|numWrites::oracle_gpu)|board.oracle_gpu" \
-  m5out/cxl_pcm_from_nvm/stats.txt
+  m5out/cxl_pcm_from_nvm_128b/stats.txt
 ```
 
 Useful config checks:
 
 ```bash
 grep -n -A30 "\[board.cxl_pcm_memory.module\]" \
-  m5out/cxl_pcm_from_dram/config.ini
+  m5out/cxl_pcm_from_dram_128b/config.ini
 grep -n -A40 "\[board.cxl_pcm_memory.nvm\]" \
-  m5out/cxl_pcm_from_nvm/config.ini
+  m5out/cxl_pcm_from_nvm_128b/config.ini
 ```
 
 Expected backend types:
@@ -564,20 +575,21 @@ Expected default asymmetric bandwidth/timing facts:
 
 - `from_dram`: `read_latency=150000`, `write_latency=500000`
 - `from_dram`: `read_bandwidth=116`, `write_bandwidth=466`
+- `from_dram`: `media_granularity=128`
 - `from_nvm`: `tREAD=150000`, `tWRITE=500000`
-- `from_nvm`: `tREAD_BURST=7451`, `tWRITE_BURST=29802`
+- `from_nvm`: `device_bus_width=64`, `burst_length=16`
+- `from_nvm`: `tREAD_BURST` should be about `14901` ticks
+- `from_nvm`: `tWRITE_BURST` should be about `59605` ticks
 
 ## CXL-PCM Verification Status
 
-Both backends were observed passing after the guest image had the latest
-`oracle_gpu_cxl_pcm_test` binary. After the final cleanup that restored native
-`DRAMInterface`/`NVMInterface` and introduced the dedicated
-`CXLPCMFromNVMInterface`, both commands above were rerun successfully.
+Both backends were observed passing after the 128B media granularity update.
+The guest image had the latest `oracle_gpu_cxl_pcm_test` binary.
 
 Latest checked output directories:
 
-- `m5out/cxl_pcm_from_dram`
-- `m5out/cxl_pcm_from_nvm`
+- `m5out/cxl_pcm_from_dram_128b`
+- `m5out/cxl_pcm_from_nvm_128b`
 
 Latest checked config facts:
 
@@ -585,10 +597,12 @@ Latest checked config facts:
 - `from_dram`: CXL-PCM range `0x100000000-0x140000000`
 - `from_dram`: `read_latency = 150000`, `write_latency = 500000`
 - `from_dram`: `read_bandwidth = 116`, `write_bandwidth = 466`
+- `from_dram`: `media_granularity = 128`
 - `from_nvm`: `board.cxl_pcm_memory.nvm.type = CXLPCMFromNVMInterface`
 - `from_nvm`: CXL-PCM range `0x100000000-0x140000000`
+- `from_nvm`: `device_bus_width = 64`, `burst_length = 16`
 - `from_nvm`: `tREAD = 150000`, `tWRITE = 500000`
-- `from_nvm`: `tREAD_BURST = 7451`, `tWRITE_BURST = 29802`
+- `from_nvm`: `tREAD_BURST = 14901`, `tWRITE_BURST = 59605`
 
 Common OracleGPU stats for both backends:
 
@@ -601,32 +615,53 @@ Common OracleGPU stats for both backends:
 
 Latest observed `from_dram` stats:
 
-- `board.cxl_pcm_memory.module.pcmReadBytes = 163392`
-- `board.cxl_pcm_memory.module.pcmWriteBytes = 65920`
-- `board.cxl_pcm_memory.module.pcmReadRequests = 2553`
+- `board.cxl_pcm_memory.module.pcmReadBytes = 301056`
+- `board.cxl_pcm_memory.module.pcmWriteBytes = 131840`
+- `board.cxl_pcm_memory.module.pcmReadRequests = 2352`
 - `board.cxl_pcm_memory.module.pcmWriteRequests = 1030`
-- `board.cxl_pcm_memory.module.totalPcmWrites = 65920`
+- `board.cxl_pcm_memory.module.totalPcmWrites = 131840`
 - `board.cxl_pcm_memory.module.bytesRead::oracle_gpu = 128`
 - `board.cxl_pcm_memory.module.bytesWritten::oracle_gpu = 128`
 
+The explicit `from_dram` PCM byte stats are media-granule bytes. In the latest
+run, writes were exactly `131840 / 1030 = 128B` per write request. Reads were
+`301056 / 2352 = 128B` per read request.
+
 Latest observed `from_nvm` stats:
 
-- `board.cxl_pcm_memory.mem_ctrl.readReqs = 2260`
+- `board.cxl_pcm_memory.mem_ctrl.readReqs = 2350`
 - `board.cxl_pcm_memory.mem_ctrl.writeReqs = 1030`
-- `board.cxl_pcm_memory.mem_ctrl.bytesReadSys = 144640`
+- `board.cxl_pcm_memory.mem_ctrl.readBursts = 2350`
+- `board.cxl_pcm_memory.mem_ctrl.writeBursts = 1030`
+- `board.cxl_pcm_memory.mem_ctrl.mergedWrBursts = 516`
+- `board.cxl_pcm_memory.mem_ctrl.bytesReadSys = 150400`
 - `board.cxl_pcm_memory.mem_ctrl.bytesWrittenSys = 65920`
-- `board.cxl_pcm_memory.nvm.readBursts = 1818`
-- `board.cxl_pcm_memory.nvm.writeBursts = 990`
-- `board.cxl_pcm_memory.nvm.nvmBytesRead = 116352`
-- `board.cxl_pcm_memory.nvm.nvmBytesWritten = 63360`
+- `board.cxl_pcm_memory.nvm.readBursts = 2074`
+- `board.cxl_pcm_memory.nvm.writeBursts = 466`
+- `board.cxl_pcm_memory.nvm.nvmBytesRead = 265472`
+- `board.cxl_pcm_memory.nvm.nvmBytesWritten = 59648`
 - `board.cxl_pcm_memory.nvm.bytesRead::oracle_gpu = 128`
 - `board.cxl_pcm_memory.nvm.bytesWritten::oracle_gpu = 128`
 - `board.cxl_pcm_memory.nvm.numReads::oracle_gpu = 2`
 - `board.cxl_pcm_memory.nvm.numWrites::oracle_gpu = 2`
 
-The difference between `bytesReadSys` and `nvmBytesRead` is expected: MemCtrl
-system-side accounting and NVM media burst accounting are different views of
-traffic, and reads may be served from the write queue.
+The latest `from_nvm` media burst stats confirm the 128B granularity:
+
+- `nvmBytesRead / readBursts = 265472 / 2074 = 128B`
+- `nvmBytesWritten / writeBursts = 59648 / 466 = 128B`
+
+Important `from_nvm` accounting caveat:
+
+- `mem_ctrl.bytesReadSys` and `mem_ctrl.bytesWrittenSys` are system request
+  bytes, still 64B per guest cache-line request in the current tests.
+- `mem_ctrl.readBursts` and `mem_ctrl.writeBursts` count controller-side
+  128B-granule burst demand before some write merging.
+- `nvm.nvmBytesRead` and `nvm.nvmBytesWritten` count bursts actually issued to
+  the NVM interface.
+- Native `MemCtrl` can merge writes in the write queue and can satisfy reads
+  from queued writes, so `nvm.writeBursts` can be lower than
+  `mem_ctrl.writeBursts`. In the latest run, 516 controller write bursts were
+  merged before reaching the NVM interface.
 
 Acceptance checklist status:
 
@@ -635,6 +670,7 @@ Acceptance checklist status:
 - Configurable read/write latency: done for both backends.
 - Configurable read/write bandwidth: done for both backends.
 - Read/write asymmetry with slower default writes: done.
+- Internal 128B PCM media granularity: implemented and FS-validated.
 - PCM read/write byte stats: done.
   - `from_dram` has explicit PCM stats.
   - `from_nvm` uses MemCtrl and NVM media stats.
@@ -645,7 +681,7 @@ Acceptance checklist status:
 - OracleGPU DMA read/write access: tested and passing.
 - DDR and CXL-PCM stats distinguishable: done by separate stat paths.
 - Existing OracleGPU smoke/generic/runtime paths: not intentionally changed by
-  the CXL-PCM backend split; previous observed results are recorded below.
+  the CXL-PCM backend split.
 
 Timing sensitivity status:
 
@@ -656,9 +692,10 @@ Timing sensitivity status:
   latency/bandwidth constants has not yet been added. This is the next step if
   quantitative timing sensitivity needs to be shown in a reproducible script.
 
-## Existing OracleGPU FS Scripts
+## Existing FS Scripts
 
-Other OracleGPU FS scripts still exist:
+Other OracleGPU FS scripts still exist and were not intentionally changed by
+the CXL-PCM backend work:
 
 - `configs/example/gem5_library/x86-oracle-gpu-fs.py`
 - `configs/example/gem5_library/x86-oracle-gpu-generic-fs.py`
@@ -667,31 +704,6 @@ Other OracleGPU FS scripts still exist:
 
 The smoke and generic scripts inject guest test binaries at boot. The runtime
 and CXL-PCM scripts expect `/usr/local/bin/...` binaries inside the guest image.
-
-Previously observed OracleGPU-only results:
-
-- Smoke test:
-  - `OracleGPU FS smoke test passed: 'oracle-gpu-fs-smoke'`
-  - `dmaReadBytes = 240`
-  - `dmaWriteBytes = 24`
-- Generic test:
-  - `OracleGPU generic test passed with 3 inputs`
-  - `dmaReadBytes = 392`
-  - `dmaWriteBytes = 132`
-- Runtime shim test:
-  - `OracleGPU runtime test passed with 3 inputs`
-  - `dmaReadBytes = 352`
-  - `dmaWriteBytes = 100`
-
-## Warnings That Were Seen and Considered Harmless
-
-These appeared in successful runs and do not indicate current test failure:
-
-- `PowerState: Already in the requested power state, request ignored`
-- `instruction 'fwait' unimplemented`
-- `User-specified generator/function list for the exit event 'exit' has ended`
-- `hack: Pretending totalOps is equivalent to totalInsts()`
-- CXL PCI message: `can't find IRQ for PCI INT A; probably buggy MP table`
 
 ## Recommended Next Steps
 

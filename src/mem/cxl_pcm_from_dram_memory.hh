@@ -6,6 +6,7 @@
 #ifndef __MEM_CXL_PCM_FROM_DRAM_MEMORY_HH__
 #define __MEM_CXL_PCM_FROM_DRAM_MEMORY_HH__
 
+#include <cstdint>
 #include <list>
 
 #include "base/statistics.hh"
@@ -74,6 +75,7 @@ class CXLPCMFromDRAMMemory : public AbstractMemory
 
     const double readBandwidth;
     const double writeBandwidth;
+    const uint64_t mediaGranularity;
 
     bool isBusy;
     bool retryReq;
@@ -87,6 +89,7 @@ class CXLPCMFromDRAMMemory : public AbstractMemory
 
     Tick getLatency(PacketPtr pkt) const;
     double getBandwidth(PacketPtr pkt) const;
+    uint64_t mediaAccessSize(PacketPtr pkt) const;
     void recordPCMStats(PacketPtr pkt);
 
     std::unique_ptr<Packet> pendingDelete;

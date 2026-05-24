@@ -5,6 +5,8 @@
 
 #include "mem/cxl_pcm_from_dram_memory.hh"
 
+#include "base/intmath.hh"
+#include "base/logging.hh"
 #include "base/random.hh"
 #include "base/trace.hh"
 #include "debug/CXLPCMFromDRAM.hh"
@@ -41,12 +43,15 @@ CXLPCMFromDRAMMemory::CXLPCMFromDRAMMemory(
       latencyVar(p.latency_var),
       readBandwidth(p.read_bandwidth),
       writeBandwidth(p.write_bandwidth),
+      mediaGranularity(p.media_granularity),
       isBusy(false),
       retryReq(false),
       retryResp(false),
       releaseEvent([this]{ release(); }, name()),
       dequeueEvent([this]{ dequeue(); }, name())
 {
+    fatal_if(mediaGranularity == 0,
+             "CXL-PCM media granularity must be non-zero\n");
 }
 
 void
@@ -126,7 +131,7 @@ CXLPCMFromDRAMMemory::recvTimingReq(PacketPtr pkt)
     Tick receive_delay = pkt->headerDelay + pkt->payloadDelay;
     pkt->headerDelay = pkt->payloadDelay = 0;
 
-    const Tick duration = pkt->getSize() * getBandwidth(pkt);
+    const Tick duration = mediaAccessSize(pkt) * getBandwidth(pkt);
     if (duration != 0) {
         schedule(releaseEvent, curTick() + duration);
         isBusy = true;
@@ -210,20 +215,35 @@ CXLPCMFromDRAMMemory::getBandwidth(PacketPtr pkt) const
     return pkt->isWrite() ? writeBandwidth : readBandwidth;
 }
 
+uint64_t
+CXLPCMFromDRAMMemory::mediaAccessSize(PacketPtr pkt) const
+{
+    const uint64_t media_offset = pkt->getAddr() % mediaGranularity;
+    return divCeil<uint64_t>(media_offset + pkt->getSize(),
+                             mediaGranularity) *
+        mediaGranularity;
+}
+
 void
 CXLPCMFromDRAMMemory::recordPCMStats(PacketPtr pkt)
 {
+    const uint64_t media_bytes = mediaAccessSize(pkt);
+
     if (pkt->isRead()) {
         pcmStats.pcmReadRequests++;
-        pcmStats.pcmReadBytes += pkt->getSize();
-        DPRINTF(CXLPCMFromDRAM, "read addr=%#llx bytes=%u\n",
-                pkt->getAddr(), pkt->getSize());
+        pcmStats.pcmReadBytes += media_bytes;
+        DPRINTF(CXLPCMFromDRAM,
+                "read addr=%#llx request_bytes=%u media_bytes=%llu\n",
+                pkt->getAddr(), pkt->getSize(),
+                static_cast<unsigned long long>(media_bytes));
     } else if (pkt->isWrite()) {
         pcmStats.pcmWriteRequests++;
-        pcmStats.pcmWriteBytes += pkt->getSize();
-        pcmStats.totalPcmWrites += pkt->getSize();
-        DPRINTF(CXLPCMFromDRAM, "write addr=%#llx bytes=%u\n",
-                pkt->getAddr(), pkt->getSize());
+        pcmStats.pcmWriteBytes += media_bytes;
+        pcmStats.totalPcmWrites += media_bytes;
+        DPRINTF(CXLPCMFromDRAM,
+                "write addr=%#llx request_bytes=%u media_bytes=%llu\n",
+                pkt->getAddr(), pkt->getSize(),
+                static_cast<unsigned long long>(media_bytes));
     }
 }
 

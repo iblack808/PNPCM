@@ -19,6 +19,9 @@ class CXLPCMFromDRAMMemory(AbstractMemory):
     write_bandwidth = Param.MemoryBandwidth(
         "2GiB/s", "CXL-PCM write bandwidth"
     )
+    media_granularity = Param.MemorySize(
+        "128B", "CXL-PCM internal media read/write granularity"
+    )
 
     def controller(self):
         return self
