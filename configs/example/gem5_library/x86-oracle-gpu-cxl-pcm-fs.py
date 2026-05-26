@@ -34,6 +34,12 @@ CXL_PCM_WRITE_LATENCY = "500ns"
 CXL_PCM_READ_BANDWIDTH = "8GiB/s"
 CXL_PCM_WRITE_BANDWIDTH = "2GiB/s"
 CXL_PCM_TEST_BYTES = 64 * 1024
+KV_BASELINE_SEQ_LEN = 8192
+KV_BASELINE_NUM_KV_HEADS = 8
+KV_BASELINE_HEAD_DIM = 128
+KV_BASELINE_DTYPE_BYTES = 2
+KV_BASELINE_COMPUTE_LATENCY_NS = 500
+ORACLE_GPU_MAX_TRANSFER_BYTES = 64 * 1024 * 1024
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BOARDS_SRC_PATH = REPO_ROOT / "src/python/gem5/components/boards"
@@ -48,6 +54,17 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument("--cxl-pcm-backend", choices=["from_dram", "from_nvm"],
                     default="from_dram")
+parser.add_argument("--skip-smoke-tests", action="store_true",
+                    help="Skip the existing CXL-PCM CPU and OracleGPU smoke tests.")
+parser.add_argument("--skip-kv-baseline", action="store_true",
+                    help="Skip the guest-side OracleGPU KV offload baseline.")
+parser.add_argument("--kv-seq-len", type=int, default=KV_BASELINE_SEQ_LEN,
+                    help="Sequence length for oracle_gpu_kv_offload_baseline.")
+parser.add_argument("--kv-compute-latency-ns", type=int,
+                    default=KV_BASELINE_COMPUTE_LATENCY_NS,
+                    help="OracleGPU compute latency per KV baseline command.")
+parser.add_argument("--no-cpu-switch", action="store_true",
+                    help="Do not switch from KVM to timing CPU before tests.")
 args = parser.parse_args()
 
 DETAILED_CPU_TYPE = CPUTypes.TIMING
@@ -56,15 +73,58 @@ NUM_CPUS = 1
 
 
 def build_guest_command() -> str:
-    return f"""
-set -e
+    def flush_console_cmd() -> str:
+        return """
+sync
+sleep 1
+"""
+
+    switch_cmd = ""
+    if not args.no_cpu_switch:
+        switch_cmd = """
 if [ -x /sbin/m5 ]; then
+    echo "[gem5-readfile] switching from KVM to timing CPU"
+    sync
+    sleep 1
     /sbin/m5 exit
 fi
+"""
+
+    smoke_tests_cmd = ""
+    if not args.skip_smoke_tests:
+        smoke_tests_cmd = f"""
+echo "[gem5-readfile] running CXL-PCM smoke tests"
 /usr/local/bin/cxl_pcm_mem_test {CXL_PCM_BASE:#x} {CXL_PCM_TEST_BYTES}
 /usr/local/bin/oracle_gpu_cxl_pcm_test
+"""
+
+    kv_baseline_cmd = ""
+    if not args.skip_kv_baseline:
+        kv_baseline_cmd = f"""
+echo "[gem5-readfile] running OracleGPU KV offload baseline"
+/usr/local/bin/oracle_gpu_kv_offload_baseline \\
+  --cxl-base {CXL_PCM_BASE:#x} \\
+  --cxl-size 0x40000000 \\
+  --seq-len {args.kv_seq_len} \\
+  --num-kv-heads {KV_BASELINE_NUM_KV_HEADS} \\
+  --head-dim {KV_BASELINE_HEAD_DIM} \\
+  --dtype-bytes {KV_BASELINE_DTYPE_BYTES} \\
+  --compute-latency-ns {args.kv_compute_latency_ns} \\
+  --result-policy pattern
+echo "[gem5-readfile] OracleGPU KV offload baseline finished"
+{flush_console_cmd()}
+"""
+
+    return f"""
+set -e
+dmesg -n 1 || true
+{switch_cmd}
+{smoke_tests_cmd}
+{kv_baseline_cmd}
+echo "[gem5-readfile] all requested guest commands finished"
+{flush_console_cmd()}
 /sbin/m5 exit
-exec /bin/sh
+sleep infinity
 """
 
 
@@ -110,6 +170,7 @@ board = X86BoardOracleGPU(
     cache_hierarchy=cache_hierarchy,
     cxl_pcm_memory=cxl_pcm,
     cxl_pcm_base=CXL_PCM_BASE,
+    oracle_gpu_max_transfer_bytes=ORACLE_GPU_MAX_TRANSFER_BYTES,
 )
 
 board.set_kernel_disk_workload(
@@ -119,12 +180,15 @@ board.set_kernel_disk_workload(
     kernel_args=board.get_default_kernel_args() + ["init=/root/gem5_init.sh"],
 )
 
-simulator = Simulator(
-    board=board,
-    on_exit_event={
-        ExitEvent.EXIT: (func() for func in [processor.switch]),
-    },
-)
+if args.no_cpu_switch:
+    simulator = Simulator(board=board)
+else:
+    simulator = Simulator(
+        board=board,
+        on_exit_event={
+            ExitEvent.EXIT: (func() for func in [processor.switch]),
+        },
+    )
 
 print(
     "Booting x86 FS system with OracleGPU and "

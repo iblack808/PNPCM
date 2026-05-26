@@ -353,6 +353,7 @@ class X86BoardOracleGPU(AbstractSystemBoard, KernelDiskWorkload):
             "disk_device={disk_device}",
             "idle=nomwait",
             "intel_idle.max_cstate=0",
+            "tsc=unstable",
             "memmap=16M$0x30000000",
         ]
 

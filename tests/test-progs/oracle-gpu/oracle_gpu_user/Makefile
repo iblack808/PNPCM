@@ -14,19 +14,24 @@ INSTALL_BINDIR ?= $(PREFIX)/bin
 
 RUNTIME_OBJ = oracle_gpu_runtime.o
 TEST_OBJ = oracle_gpu_runtime_test.o
+KV_BASELINE_OBJ = oracle_gpu_kv_offload_baseline.o
 STATIC_LIB = $(LIBDIR)/liboraclegpu.a
 SHARED_LIB = $(LIBDIR)/liboraclegpu.so
 TEST_BIN = $(OUTDIR)/oracle_gpu_runtime_test
+KV_BASELINE_BIN = $(OUTDIR)/oracle_gpu_kv_offload_baseline
 
 .PHONY: all clean install
 
-all: $(STATIC_LIB) $(SHARED_LIB) $(TEST_BIN)
+all: $(STATIC_LIB) $(SHARED_LIB) $(TEST_BIN) $(KV_BASELINE_BIN)
 
 $(RUNTIME_OBJ): oracle_gpu_runtime.c oracle_gpu_runtime.h oracle_gpu_abi.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ oracle_gpu_runtime.c
 
 $(TEST_OBJ): oracle_gpu_runtime_test.c oracle_gpu_runtime.h oracle_gpu_abi.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ oracle_gpu_runtime_test.c
+
+$(KV_BASELINE_OBJ): oracle_gpu_kv_offload_baseline.c oracle_gpu_runtime.h oracle_gpu_abi.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ oracle_gpu_kv_offload_baseline.c
 
 $(STATIC_LIB): $(RUNTIME_OBJ)
 	mkdir -p $(LIBDIR)
@@ -40,11 +45,15 @@ $(TEST_BIN): $(TEST_OBJ) $(STATIC_LIB)
 	mkdir -p $(OUTDIR)
 	$(CC) $(TEST_LDFLAGS) $(LDFLAGS) -o $@ $(TEST_OBJ) $(STATIC_LIB)
 
-install: $(STATIC_LIB) $(SHARED_LIB) $(TEST_BIN)
+$(KV_BASELINE_BIN): $(KV_BASELINE_OBJ) $(STATIC_LIB)
+	mkdir -p $(OUTDIR)
+	$(CC) $(TEST_LDFLAGS) $(LDFLAGS) -o $@ $(KV_BASELINE_OBJ) $(STATIC_LIB)
+
+install: $(STATIC_LIB) $(SHARED_LIB) $(TEST_BIN) $(KV_BASELINE_BIN)
 	install -d $(DESTDIR)$(INCLUDEDIR) $(DESTDIR)$(INSTALL_LIBDIR) $(DESTDIR)$(INSTALL_BINDIR)
 	install -m 0644 oracle_gpu_abi.h oracle_gpu_runtime.h $(DESTDIR)$(INCLUDEDIR)/
 	install -m 0644 $(STATIC_LIB) $(SHARED_LIB) $(DESTDIR)$(INSTALL_LIBDIR)/
-	install -m 0755 $(TEST_BIN) $(DESTDIR)$(INSTALL_BINDIR)/
+	install -m 0755 $(TEST_BIN) $(KV_BASELINE_BIN) $(DESTDIR)$(INSTALL_BINDIR)/
 
 clean:
-	rm -f $(RUNTIME_OBJ) $(TEST_OBJ) $(STATIC_LIB) $(SHARED_LIB) $(TEST_BIN)
+	rm -f $(RUNTIME_OBJ) $(TEST_OBJ) $(KV_BASELINE_OBJ) $(STATIC_LIB) $(SHARED_LIB) $(TEST_BIN) $(KV_BASELINE_BIN)

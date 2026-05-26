@@ -273,6 +273,17 @@ class MemInterface : public AbstractMemory
     virtual Tick accessLatency() const = 0;
 
     /**
+     * Record media-specific accounting for an atomic access. Timing-mode
+     * accesses are accounted by burst scheduling paths, but KVM/atomic-mode
+     * accesses bypass those paths and may need interface-specific logical
+     * transaction counters.
+     */
+    virtual void recordAtomicAccess(Addr addr, unsigned size, bool is_read,
+                                    RequestorID requestor_id)
+    {
+    }
+
+    /**
      * @return number of bytes in a burst for this interface
      */
     uint32_t bytesPerBurst() const { return burstSize; }

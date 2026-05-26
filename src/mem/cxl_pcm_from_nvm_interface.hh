@@ -66,6 +66,8 @@ namespace memory
 class CXLPCMFromNVMInterface : public MemInterface
 {
   private:
+    static constexpr uint64_t logicalPcmTransactionBytes = 128;
+
     /**
      * NVM rank class simply includes a vector of banks.
      */
@@ -137,6 +139,11 @@ class CXLPCMFromNVMInterface : public MemInterface
         statistics::Scalar nvmBytesRead;
         statistics::Scalar nvmBytesWritten;
 
+        statistics::Scalar logicalPcmReadTransactions128B;
+        statistics::Scalar logicalPcmWriteTransactions128B;
+        statistics::Vector requestorLogicalPcmReadTransactions128B;
+        statistics::Vector requestorLogicalPcmWriteTransactions128B;
+
         // Average bandwidth
         statistics::Formula avgRdBW;
         statistics::Formula avgWrBW;
@@ -151,6 +158,14 @@ class CXLPCMFromNVMInterface : public MemInterface
         statistics::Histogram bytesPerBank;
     };
     NVMStats stats;
+
+    std::vector<uint64_t> lastReadLogicalPcmBlock;
+    std::vector<uint64_t> lastWriteLogicalPcmBlock;
+    std::vector<bool> validLastReadLogicalPcmBlock;
+    std::vector<bool> validLastWriteLogicalPcmBlock;
+
+    void recordLogicalPcmAccess(Addr addr, unsigned size, bool is_read,
+                                RequestorID requestor_id);
 
     void processWriteRespondEvent();
     EventFunctionWrapper writeRespondEvent;
@@ -288,6 +303,9 @@ class CXLPCMFromNVMInterface : public MemInterface
      * Function to calulate unloaded access latency
      */
     Tick accessLatency() const override { return (tREAD + tSEND); }
+
+    void recordAtomicAccess(Addr addr, unsigned size, bool is_read,
+                            RequestorID requestor_id) override;
 
     /**
      * Check if the write response queue has reached defined threshold

@@ -1,16 +1,18 @@
-# OracleGPU and CXL-PCM Handoff
+# OracleGPU and CXL-PCM Status
 
-Last updated: 2026-05-24
+Last updated: 2026-05-26
 
-This document records the current SimCXL state after the OracleGPU Phase B
-generic-command work and the first system-level CXL-PCM memory tier work. It is
+This document records the current SimCXL OracleGPU and CXL-PCM state. It is
 intended for a future Codex agent or engineer to continue without re-discovering
-the project context.
+the project context or relying on old phase labels.
 
 Current status:
 
 - OracleGPU is implemented as a generic GPU-operation proxy.
 - A guest-side OracleGPU runtime shim exists and has passed FS guest tests.
+- A guest-side KV offload baseline driver exists for the first LLM-like system
+  baseline. The current validated path is `from_nvm` plus KVM
+  `--no-cpu-switch`.
 - CXL-PCM exists in two selectable backend variants:
   - `CXL-PCM_from_dram`: custom DRAM-path-derived memory object.
   - `CXL-PCM_from_nvm`: CXL-PCM-specific NVMInterface/MemCtrl-derived backend.
@@ -21,6 +23,8 @@ Current status:
   and independently configurable read/write bandwidth.
 - Both CXL-PCM variants now model a 128B internal PCM media read/write
   granularity.
+- The `from_nvm` KVM/atomic path has explicit logical 128B PCM transaction
+  stats for later KV-cache experiments.
 - Native gem5 `DRAMInterface` and `NVMInterface` are intentionally restored and
   left unchanged. CXL-PCM-specific behavior lives in CXL-PCM-specific files.
 
@@ -31,6 +35,8 @@ Current accepted baseline:
 - CPU guest test accesses the CXL-PCM range and updates CXL-PCM stats.
 - OracleGPU DMA reads and writes the same CXL-PCM range and updates both
   OracleGPU DMA stats and CXL-PCM per-requestor stats.
+- The KV baseline places K/V cache segments in CXL-PCM, Q/output in DDR, and
+  submits only OracleGPU generic commands through the guest runtime shim.
 - `from_dram` and `from_nvm` are selected only by
   `--cxl-pcm-backend from_dram|from_nvm`.
 
@@ -117,6 +123,13 @@ Current stats in `OracleGPUStats`:
 - `dmaWriteBytes`
 - `completedCount`
 - `invalidCommandCount`
+- `lastComputeLatencyTicks`
+- `lastComputeStartTick`
+- `lastComputeDoneTick`
+- `lastComputeObservedTicks`
+
+The `lastCompute*` stats were added so KVM FS-mode experiments can validate
+`compute_latency_ns` without relying on noisy whole-system `finalTick`.
 
 MMIO readback registers expose:
 
@@ -138,6 +151,7 @@ Guest test sources:
 - `tests/test-progs/oracle-gpu/src/oracle_gpu_cxl_pcm_test.c`
 - `tests/test-progs/oracle-gpu/src/Makefile`
 - `tests/test-progs/oracle-gpu/oracle_gpu_user/oracle_gpu_runtime_test.c`
+- `tests/test-progs/oracle-gpu/oracle_gpu_user/oracle_gpu_kv_offload_baseline.c`
 
 Generated binaries:
 
@@ -145,6 +159,7 @@ Generated binaries:
 - `tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_generic_test`
 - `tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_cxl_pcm_test`
 - `tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_runtime_test`
+- `tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_kv_offload_baseline`
 
 Do not use `tests/test-progs/oracle-gpu/src/oracle_gpu_cxl_pcm_test` as a
 binary path. That `src/` directory binary was a redundant implicit-make output
@@ -169,6 +184,7 @@ Files:
 - `oracle_gpu_runtime.h`
 - `oracle_gpu_runtime.c`
 - `oracle_gpu_runtime_test.c`
+- `oracle_gpu_kv_offload_baseline.c`
 - `Makefile`
 - `README.md`
 
@@ -435,6 +451,11 @@ Stats:
   - `board.cxl_pcm_memory.nvm.bytesWritten::oracle_gpu`
   - `board.cxl_pcm_memory.nvm.numReads::oracle_gpu`
   - `board.cxl_pcm_memory.nvm.numWrites::oracle_gpu`
+- KVM/atomic logical PCM transaction stats:
+  - `board.cxl_pcm_memory.nvm.logicalPcmReadTransactions128B`
+  - `board.cxl_pcm_memory.nvm.logicalPcmWriteTransactions128B`
+  - `board.cxl_pcm_memory.nvm.requestorLogicalPcmReadTransactions128B::oracle_gpu`
+  - `board.cxl_pcm_memory.nvm.requestorLogicalPcmWriteTransactions128B::oracle_gpu`
 
 There is no `totalPcmWrites` stat with that exact name in `from_nvm`. Use one
 of these depending on the question:
@@ -444,6 +465,8 @@ of these depending on the question:
 - `board.cxl_pcm_memory.nvm.nvmBytesWritten` for media-side NVM write traffic.
 - `board.cxl_pcm_memory.nvm.bytesWritten::oracle_gpu` for OracleGPU-written
   bytes to the NVM-backed CXL range.
+- `board.cxl_pcm_memory.nvm.logicalPcmWriteTransactions128B` for KVM/atomic
+  logical 128B PCM write transactions.
 
 ## CXL-PCM Guest Tests
 
@@ -586,11 +609,6 @@ Expected default asymmetric bandwidth/timing facts:
 Both backends were observed passing after the 128B media granularity update.
 The guest image had the latest `oracle_gpu_cxl_pcm_test` binary.
 
-Latest checked output directories:
-
-- `m5out/cxl_pcm_from_dram_128b`
-- `m5out/cxl_pcm_from_nvm_128b`
-
 Latest checked config facts:
 
 - `from_dram`: `board.cxl_pcm_memory.module.type = CXLPCMFromDRAMMemory`
@@ -692,6 +710,91 @@ Timing sensitivity status:
   latency/bandwidth constants has not yet been added. This is the next step if
   quantitative timing sensitivity needs to be shown in a reproducible script.
 
+## KV Offload Baseline Status
+
+The first LLM-like KV offload system baseline is implemented as a guest-side
+driver:
+
+- Source: `tests/test-progs/oracle-gpu/oracle_gpu_user/oracle_gpu_kv_offload_baseline.c`
+- Binary: `tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_kv_offload_baseline`
+- Runbook: `doc/OracleGPU_KV_Offload_Baseline_Runbook.md`
+
+Behavior:
+
+- Uses the guest `oracle_gpu_runtime` API.
+- Builds an OracleGPU generic command with:
+  - input0: Q buffer in DDR scratch memory.
+  - input1: K cache physical range in CXL-PCM.
+  - input2: V cache physical range in CXL-PCM.
+  - output: DDR scratch memory by default.
+- Uses `ZERO_FILL` or `PATTERN_FILL`; no real attention or matmul is
+  implemented.
+- Prints expected Q/K/V/output bytes, OracleGPU DMA bytes, CXL-PCM bytes, and
+  128B logical PCM transaction counts.
+
+Current validated path:
+
+- Backend: `--cxl-pcm-backend from_nvm`
+- CPU mode: KVM with `--no-cpu-switch`
+- Default CXL-PCM base: `0x100000000`
+- Default CXL-PCM size: `0x40000000`
+- K/V are 128B-aligned physical CXL-PCM ranges.
+- Q/output are DDR scratch ranges.
+
+Important implementation details:
+
+- OracleGPU input DMA is chunked at 64B host request granularity.
+- The `from_nvm` KVM/atomic path separately tracks logical 128B PCM
+  transactions and coalesces adjacent 64B accesses that touch the same 128B
+  block.
+- In KVM/atomic mode, timing-mode NVM media counters such as `readBursts` and
+  `nvmBytesRead` remain zero. Use `bytesRead::oracle_gpu` for actual CXL-PCM
+  bytes and `logicalPcmReadTransactions128B` for logical 128B transaction
+  count.
+- Whole-system `finalTick` is not a reliable compute-latency check in KVM FS.
+  Use `board.oracle_gpu.lastComputeLatencyTicks` and
+  `board.oracle_gpu.lastComputeObservedTicks`.
+
+Validated no-smoke run:
+
+- `OracleGPU KV offload baseline passed`
+- `board.oracle_gpu.genericCommandCount = 1`
+- `board.oracle_gpu.completedCount = 1`
+- `board.oracle_gpu.invalidCommandCount = 0`
+- `board.oracle_gpu.dmaReadBytes = 264392`
+- `board.oracle_gpu.dmaWriteBytes = 2052`
+- `board.cxl_pcm_memory.mem_ctrl.bytesReadSys = 262144`
+- `board.cxl_pcm_memory.mem_ctrl.bytesWrittenSys = 0`
+- `board.cxl_pcm_memory.nvm.bytesRead::oracle_gpu = 262144`
+- `board.cxl_pcm_memory.nvm.logicalPcmReadTransactions128B = 2048`
+- `board.cxl_pcm_memory.nvm.logicalPcmWriteTransactions128B = 0`
+- `board.oracle_gpu.lastComputeLatencyTicks = 500000`
+- `board.oracle_gpu.lastComputeObservedTicks = 500000`
+
+Validated smoke plus KV run:
+
+- `CXL-PCM memory test passed`
+- `OracleGPU CXL-PCM DMA test passed`
+- `OracleGPU KV offload baseline passed`
+- `board.oracle_gpu.genericCommandCount = 2`
+- `board.oracle_gpu.completedCount = 2`
+- `board.oracle_gpu.invalidCommandCount = 0`
+- `board.oracle_gpu.dmaReadBytes = 264720`
+- `board.oracle_gpu.dmaWriteBytes = 2184`
+- `board.cxl_pcm_memory.mem_ctrl.bytesReadSys = 262272`
+- `board.cxl_pcm_memory.mem_ctrl.bytesWrittenSys = 128`
+- `board.cxl_pcm_memory.nvm.logicalPcmReadTransactions128B = 2050`
+- `board.cxl_pcm_memory.nvm.logicalPcmWriteTransactions128B = 1`
+
+The smoke run has 2050 logical PCM read transactions, not 2049, because the
+OracleGPU CXL-PCM smoke test uses two separate 64B CXL-PCM input buffers. Each
+buffer occupies a different 128B-aligned PCM block.
+
+Earlier no-smoke NVM/KVM runs validated KV byte traffic for
+`seq_len = 4096`, `8192`, and `16384`. They were not rerun after adding
+logical PCM transaction stats because `seq_len = 64` exercises the same
+accounting path.
+
 ## Existing FS Scripts
 
 Other OracleGPU FS scripts still exist and were not intentionally changed by
@@ -712,13 +815,25 @@ Near-term engineering cleanup:
 1. Decide whether to commit binary test outputs or keep only sources plus build
    instructions. The current tree includes generated guest binaries under
    `tests/test-progs/.../bin/x86/linux/`.
-2. Add a dedicated timing experiment that changes CXL-PCM latency/bandwidth
-   parameters and compares simulated time.
-3. Add a dedicated `ZERO_FILL` OracleGPU test.
-4. Add a dynamic-link test for `liboraclegpu.so` if shared-library deployment
+2. Keep `doc/OracleGPU_KV_Offload_Baseline_Runbook.md` as the canonical
+   command/stats reference for the current KV baseline experiments.
+3. Add a dedicated timing experiment that changes CXL-PCM latency/bandwidth
+   parameters and compares OracleGPU/CXL-PCM stats and simulated time.
+4. Add a dedicated `ZERO_FILL` OracleGPU test if result-policy coverage needs
+   to be explicit.
+5. Add a dynamic-link test for `liboraclegpu.so` if shared-library deployment
    matters.
-5. Consider making kernel/disk image paths configurable if this will run on
+6. Consider making kernel/disk image paths configurable if this will run on
    machines other than the current `/data/tyb/gem5/...` setup.
+
+Potential future KV-baseline work:
+
+1. Add a small parser or notebook that extracts the runbook stats from
+   `stats.txt` into experiment tables.
+2. Re-run `seq_len = 4096`, `8192`, and `16384` after any future change to the
+   logical transaction accounting path.
+3. Extend the guest driver to sweep `num_layers` and `output_tokens` when the
+   paper experiments need multi-command decode behavior.
 
 Potential future CXL-PCM work:
 
@@ -727,12 +842,13 @@ Potential future CXL-PCM work:
 2. Add regression tests that grep for both CPU and OracleGPU CXL stats.
 3. Add a dedicated timing experiment that separately sweeps
    `CXL_PCM_READ_BANDWIDTH` and `CXL_PCM_WRITE_BANDWIDTH` for `from_nvm`.
-4. Keep `range_type = 20`; do not revert to reserved `range_type = 2`. The
+4. Decide whether `from_dram` should remain a maintained experiment backend or
+   stay secondary to the current `from_nvm` path.
+5. Keep `range_type = 20`; do not revert to reserved `range_type = 2`. The
    current tests depend on Linux exposing the CXL memory as a NUMA memory node.
 
 Out of scope until explicitly requested:
 
-- LLM-like KV offload baseline.
 - Inference framework integration.
 - Attention-specific OracleGPU commands.
 - Near-memory attention.

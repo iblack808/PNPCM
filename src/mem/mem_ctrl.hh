@@ -499,9 +499,14 @@ class MemCtrl : public qos::MemCtrl
     std::unordered_multiset<Tick> burstTicks;
 
     /**
-+    * Create pointer to interface of the actual memory media when connected
-+    */
+     * Create pointer to interface of the actual memory media when connected
+     */
     MemInterface* dram;
+
+    /**
+     * Whether atomic accesses may return direct host-memory backdoors.
+     */
+    const bool enableBackdoor;
 
     virtual AddrRangeList getAddrRanges();
 

@@ -41,6 +41,8 @@ class OracleGPU : public DmaDevice
     using CommandDescriptor = OracleGPUCommand;
     using InputSegment = OracleGPUInputSegment;
 
+    static constexpr uint64_t inputDmaChunkBytes = 64;
+
     struct OracleGPUStats : public statistics::Group
     {
         explicit OracleGPUStats(statistics::Group *parent);
@@ -51,6 +53,10 @@ class OracleGPU : public DmaDevice
         statistics::Scalar dmaWriteBytes;
         statistics::Scalar completedCount;
         statistics::Scalar invalidCommandCount;
+        statistics::Scalar lastComputeLatencyTicks;
+        statistics::Scalar lastComputeStartTick;
+        statistics::Scalar lastComputeDoneTick;
+        statistics::Scalar lastComputeObservedTicks;
     } stats;
 
     const Addr pioAddr;
@@ -68,6 +74,9 @@ class OracleGPU : public DmaDevice
     CommandDescriptor activeCmd;
     uint32_t completionValue;
     uint32_t currentInputIndex;
+    uint64_t currentInputOffset;
+    uint64_t currentInputChunkBytes;
+    Tick currentComputeStartTick;
 
     EventFunctionWrapper descReadDoneEvent;
     EventFunctionWrapper inputReadDoneEvent;
@@ -84,6 +93,7 @@ class OracleGPU : public DmaDevice
     void finishPayloadWrite();
     void finishCompletionWrite();
     void startNextInputRead();
+    void startCurrentInputChunkRead();
     void startResultWrite();
     bool validateCommand();
     const InputSegment &currentInput() const;

@@ -1,5 +1,6 @@
 #include "dev/oracle_gpu.hh"
 
+#include <algorithm>
 #include <cstring>
 
 #include "base/bitfield.hh"
@@ -26,7 +27,15 @@ OracleGPU::OracleGPUStats::OracleGPUStats(statistics::Group *parent)
       ADD_STAT(completedCount, statistics::units::Count::get(),
                "Number of completed OracleGPU commands"),
       ADD_STAT(invalidCommandCount, statistics::units::Count::get(),
-               "Number of invalid OracleGPU commands")
+               "Number of invalid OracleGPU commands"),
+      ADD_STAT(lastComputeLatencyTicks, statistics::units::Tick::get(),
+               "Requested compute delay in ticks for the last command"),
+      ADD_STAT(lastComputeStartTick, statistics::units::Tick::get(),
+               "Tick when the last command entered compute delay"),
+      ADD_STAT(lastComputeDoneTick, statistics::units::Tick::get(),
+               "Tick when the last command finished compute delay"),
+      ADD_STAT(lastComputeObservedTicks, statistics::units::Tick::get(),
+               "Observed compute delay ticks for the last command")
 {
 }
 
@@ -43,6 +52,9 @@ OracleGPU::OracleGPU(const Params &p)
       descBuffer(sizeof(CommandDescriptor), 0),
       completionValue(1),
       currentInputIndex(0),
+      currentInputOffset(0),
+      currentInputChunkBytes(0),
+      currentComputeStartTick(0),
       descReadDoneEvent([this] { finishDescRead(); }, name()),
       inputReadDoneEvent([this] { finishInputRead(); }, name()),
       computeDoneEvent([this] { finishCompute(); }, name()),
@@ -60,6 +72,9 @@ OracleGPU::clearCommandState()
     inputBuffer.clear();
     outputBuffer.clear();
     currentInputIndex = 0;
+    currentInputOffset = 0;
+    currentInputChunkBytes = 0;
+    currentComputeStartTick = 0;
 }
 
 void
@@ -216,51 +231,101 @@ OracleGPU::startNextInputRead()
 {
     if (currentInputIndex >= activeCmd.num_inputs) {
         const Tick delay = sim_clock::as_int::ns * activeCmd.compute_latency_ns;
+        currentComputeStartTick = curTick();
+        stats.lastComputeLatencyTicks = delay;
+        stats.lastComputeStartTick = currentComputeStartTick;
         DPRINTF(OracleGPU,
                 "All input DMA reads complete, scheduling compute delay of "
-                "%llu ns for user_tag=%llu\n",
+                "%llu ns (%llu ticks) for user_tag=%llu\n",
                 static_cast<unsigned long long>(activeCmd.compute_latency_ns),
+                static_cast<unsigned long long>(delay),
                 static_cast<unsigned long long>(activeCmd.user_tag));
-        schedule(computeDoneEvent, curTick() + delay);
+        schedule(computeDoneEvent, currentComputeStartTick + delay);
         return;
     }
 
     const auto &input = currentInput();
     inputBuffer.resize(input.bytes, 0);
+    currentInputOffset = 0;
+    currentInputChunkBytes = 0;
     DPRINTF(OracleGPU,
             "Starting DMA read for input[%u] addr=%#llx bytes=%llu "
-            "user_tag=%llu\n",
+            "chunk_bytes=%llu user_tag=%llu\n",
             currentInputIndex,
             static_cast<unsigned long long>(input.addr),
             static_cast<unsigned long long>(input.bytes),
+            static_cast<unsigned long long>(inputDmaChunkBytes),
             static_cast<unsigned long long>(activeCmd.user_tag));
-    dmaRead(input.addr, input.bytes, &inputReadDoneEvent, inputBuffer.data(), 0);
-    stats.dmaReadBytes += input.bytes;
+    startCurrentInputChunkRead();
+}
+
+void
+OracleGPU::startCurrentInputChunkRead()
+{
+    const auto &input = currentInput();
+    currentInputChunkBytes =
+        std::min<uint64_t>(inputDmaChunkBytes, input.bytes - currentInputOffset);
+    const Addr chunk_addr = input.addr + currentInputOffset;
+
+    DPRINTF(OracleGPU,
+            "Starting DMA read chunk for input[%u] addr=%#llx offset=%llu "
+            "bytes=%llu user_tag=%llu\n",
+            currentInputIndex,
+            static_cast<unsigned long long>(chunk_addr),
+            static_cast<unsigned long long>(currentInputOffset),
+            static_cast<unsigned long long>(currentInputChunkBytes),
+            static_cast<unsigned long long>(activeCmd.user_tag));
+
+    dmaRead(chunk_addr, currentInputChunkBytes, &inputReadDoneEvent,
+            inputBuffer.data() + currentInputOffset, 0);
+    stats.dmaReadBytes += currentInputChunkBytes;
 }
 
 void
 OracleGPU::finishInputRead()
 {
     DPRINTF(OracleGPU,
-            "DMA read complete for input[%u] bytes=%llu user_tag=%llu\n",
+            "DMA read chunk complete for input[%u] offset=%llu bytes=%llu "
+            "user_tag=%llu\n",
+            currentInputIndex,
+            static_cast<unsigned long long>(currentInputOffset),
+            static_cast<unsigned long long>(currentInputChunkBytes),
+            static_cast<unsigned long long>(activeCmd.user_tag));
+
+    currentInputOffset += currentInputChunkBytes;
+    if (currentInputOffset < currentInput().bytes) {
+        startCurrentInputChunkRead();
+        return;
+    }
+
+    DPRINTF(OracleGPU,
+            "DMA read complete for input[%u] total_bytes=%llu "
+            "user_tag=%llu\n",
             currentInputIndex,
             static_cast<unsigned long long>(currentInput().bytes),
             static_cast<unsigned long long>(activeCmd.user_tag));
 
     currentInputIndex++;
+    currentInputOffset = 0;
+    currentInputChunkBytes = 0;
     startNextInputRead();
 }
 
 void
 OracleGPU::finishCompute()
 {
+    stats.lastComputeDoneTick = curTick();
+    stats.lastComputeObservedTicks = curTick() - currentComputeStartTick;
+
     DPRINTF(OracleGPU,
             "Compute delay complete for user_tag=%llu, preparing result "
-            "policy=%u dst=%#llx bytes=%llu\n",
+            "policy=%u dst=%#llx bytes=%llu observed_compute_ticks=%llu\n",
             static_cast<unsigned long long>(activeCmd.user_tag),
             activeCmd.result_policy,
             static_cast<unsigned long long>(activeCmd.dst_addr),
-            static_cast<unsigned long long>(activeCmd.dst_bytes));
+            static_cast<unsigned long long>(activeCmd.dst_bytes),
+            static_cast<unsigned long long>(
+                stats.lastComputeObservedTicks.value()));
 
     outputBuffer.resize(activeCmd.dst_bytes, 0);
 

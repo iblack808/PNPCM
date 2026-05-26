@@ -43,6 +43,7 @@ class SingleChannelCXLPCMFromNVM(AbstractMemorySystem):
             dram=self.nvm,
             static_frontend_latency=static_frontend_latency,
             static_backend_latency=static_backend_latency,
+            enable_backdoor=False,
         )
 
     @staticmethod

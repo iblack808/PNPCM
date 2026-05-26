@@ -66,6 +66,7 @@ MemCtrl::MemCtrl(const MemCtrlParams &p) :
     respondEvent([this] {processRespondEvent(dram, respQueue,
                          respondEvent, retryRdReq); }, name()),
     dram(p.dram),
+    enableBackdoor(p.enable_backdoor),
     readBufferSize(dram->readBufferSize),
     writeBufferSize(dram->writeBufferSize),
     writeHighThreshold(writeBufferSize * p.write_high_thresh_perc / 100.0),
@@ -141,8 +142,29 @@ MemCtrl::recvAtomicLogic(PacketPtr pkt, MemInterface* mem_intr)
     panic_if(pkt->cacheResponding(), "Should not see packets where cache "
              "is responding");
 
+    const bool is_read = pkt->isRead();
+    const bool is_write = pkt->isWrite();
+    const unsigned size = pkt->getSize();
+    const RequestorID requestor_id = pkt->requestorId();
+
     // do the actual memory access and turn the packet into a response
     mem_intr->access(pkt);
+
+    if (is_read) {
+        stats.readReqs++;
+        stats.bytesReadSys += size;
+        stats.requestorReadAccesses[requestor_id]++;
+        stats.requestorReadBytes[requestor_id] += size;
+        mem_intr->recordAtomicAccess(pkt->getAddr(), size, true,
+                                     requestor_id);
+    } else if (is_write) {
+        stats.writeReqs++;
+        stats.bytesWrittenSys += size;
+        stats.requestorWriteAccesses[requestor_id]++;
+        stats.requestorWriteBytes[requestor_id] += size;
+        mem_intr->recordAtomicAccess(pkt->getAddr(), size, false,
+                                     requestor_id);
+    }
 
     if (pkt->hasData()) {
         // this value is not supposed to be accurate, just enough to
@@ -158,7 +180,9 @@ Tick
 MemCtrl::recvAtomicBackdoor(PacketPtr pkt, MemBackdoorPtr &backdoor)
 {
     Tick latency = recvAtomic(pkt);
-    dram->getBackdoor(backdoor);
+    if (enableBackdoor) {
+        dram->getBackdoor(backdoor);
+    }
     return latency;
 }
 
@@ -1394,7 +1418,9 @@ MemCtrl::recvMemBackdoorReq(const MemBackdoorReq &req,
             "Can't handle address range for backdoor %s.",
             req.range().to_string());
 
-    dram->getBackdoor(backdoor);
+    if (enableBackdoor) {
+        dram->getBackdoor(backdoor);
+    }
 }
 
 bool

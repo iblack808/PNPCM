@@ -44,6 +44,7 @@
 #include "base/cprintf.hh"
 #include "base/trace.hh"
 #include "debug/NVM.hh"
+#include "mem/request.hh"
 #include "sim/system.hh"
 
 namespace gem5
@@ -402,6 +403,59 @@ CXLPCMFromNVMInterface::processReadReadyEvent()
     }
 }
 
+void
+CXLPCMFromNVMInterface::recordAtomicAccess(Addr addr, unsigned size,
+                                           bool is_read,
+                                           RequestorID requestor_id)
+{
+    recordLogicalPcmAccess(addr, size, is_read, requestor_id);
+}
+
+void
+CXLPCMFromNVMInterface::recordLogicalPcmAccess(Addr addr, unsigned size,
+                                               bool is_read,
+                                               RequestorID requestor_id)
+{
+    if (size == 0 || requestor_id == Request::invldRequestorId) {
+        return;
+    }
+
+    auto &last_blocks = is_read ? lastReadLogicalPcmBlock :
+        lastWriteLogicalPcmBlock;
+    auto &valid_blocks = is_read ? validLastReadLogicalPcmBlock :
+        validLastWriteLogicalPcmBlock;
+
+    if (requestor_id >= last_blocks.size()) {
+        const size_t new_size = requestor_id + 1;
+        last_blocks.resize(new_size, 0);
+        valid_blocks.resize(new_size, false);
+    }
+
+    const uint64_t first_block = addr / logicalPcmTransactionBytes;
+    const uint64_t last_block =
+        (addr + size - 1) / logicalPcmTransactionBytes;
+    uint64_t transactions = 0;
+
+    for (uint64_t block = first_block; block <= last_block; ++block) {
+        if (!valid_blocks[requestor_id] ||
+            last_blocks[requestor_id] != block) {
+            transactions++;
+            valid_blocks[requestor_id] = true;
+            last_blocks[requestor_id] = block;
+        }
+    }
+
+    if (is_read) {
+        stats.logicalPcmReadTransactions128B += transactions;
+        stats.requestorLogicalPcmReadTransactions128B[requestor_id] +=
+            transactions;
+    } else {
+        stats.logicalPcmWriteTransactions128B += transactions;
+        stats.requestorLogicalPcmWriteTransactions128B[requestor_id] +=
+            transactions;
+    }
+}
+
 bool
 CXLPCMFromNVMInterface::burstReady(MemPacket* pkt) const {
     bool read_rdy =  pkt->isRead() && (ctrl->inReadBusState(true, this)) &&
@@ -663,6 +717,18 @@ CXLPCMFromNVMInterface::NVMStats::NVMStats(CXLPCMFromNVMInterface &_nvm)
             "Total bytes read"),
     ADD_STAT(nvmBytesWritten, statistics::units::Byte::get(),
             "Total bytes written"),
+    ADD_STAT(logicalPcmReadTransactions128B, statistics::units::Count::get(),
+             "Logical 128B PCM read transactions observed in atomic mode"),
+    ADD_STAT(logicalPcmWriteTransactions128B, statistics::units::Count::get(),
+             "Logical 128B PCM write transactions observed in atomic mode"),
+    ADD_STAT(requestorLogicalPcmReadTransactions128B,
+             statistics::units::Count::get(),
+             "Per-requestor logical 128B PCM read transactions observed in "
+             "atomic mode"),
+    ADD_STAT(requestorLogicalPcmWriteTransactions128B,
+             statistics::units::Count::get(),
+             "Per-requestor logical 128B PCM write transactions observed in "
+             "atomic mode"),
 
     ADD_STAT(avgRdBW, statistics::units::Rate<
                 statistics::units::Byte, statistics::units::Second>::get(),
@@ -712,6 +778,21 @@ CXLPCMFromNVMInterface::NVMStats::regStats()
     busUtil.precision(2);
     busUtilRead.precision(2);
     busUtilWrite.precision(2);
+
+    assert(nvm.system());
+    const auto max_requestors = nvm.system()->maxRequestors();
+    requestorLogicalPcmReadTransactions128B
+        .init(max_requestors)
+        .flags(nozero);
+    requestorLogicalPcmWriteTransactions128B
+        .init(max_requestors)
+        .flags(nozero);
+
+    for (int i = 0; i < max_requestors; i++) {
+        const std::string requestor = nvm.system()->getRequestorName(i);
+        requestorLogicalPcmReadTransactions128B.subname(i, requestor);
+        requestorLogicalPcmWriteTransactions128B.subname(i, requestor);
+    }
 
     pendingReads
         .init(nvm.maxPendingReads)

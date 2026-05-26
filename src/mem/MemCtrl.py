@@ -101,6 +101,10 @@ class MemCtrl(QoSMemCtrl):
 
     command_window = Param.Latency("10ns", "Static backend latency")
     disable_sanity_check = Param.Bool(False, "Disable port resp Q size check")
+    enable_backdoor = Param.Bool(
+        True,
+        "Enable atomic-mode memory backdoor access for this controller",
+    )
 
 
 add_citation(
