@@ -1,6 +1,6 @@
 # OracleGPU KV Offload Baseline Runbook
 
-Last updated: 2026-05-26
+Last updated: 2026-05-27
 
 This runbook records the current validated path for the first system baseline:
 an FS-mode, guest-side LLM-like KV offload driver using OracleGPU generic
@@ -16,10 +16,14 @@ Current primary path:
 - K/V cache: physical ranges inside CXL-PCM
 - Q/output: DDR scratch physical ranges
 - OracleGPU command: generic command only
+- Preferred output-flow validation policy: `kv-size-pattern`
 
 The driver does not implement attention, matmul, Q/K/V semantics inside
 OracleGPU, PyTorch/vLLM integration, a scheduler, a sealed KV store, or a
 near-memory attention engine.
+In `kv-size-pattern` mode, OracleGPU generates deterministic output bytes from
+the K/V byte sizes inside the device. This is an output DMA-flow validation, not
+an attention computation.
 
 The `from_dram` backend is not the near-term experiment path and has not been
 kept in lockstep with the KVM/atomic accounting fixes described here.
@@ -67,6 +71,17 @@ sudo make -C tests/test-progs/oracle-gpu/oracle_gpu_user \
 sync
 ```
 
+If you want to minimize guest rootfs changes, copying only the static KV
+baseline binary is also sufficient after `make`:
+
+```bash
+sudo cp tests/test-progs/oracle-gpu/bin/x86/linux/oracle_gpu_kv_offload_baseline \
+  /home/tyb/workspace/SimCXL/local_mnt/usr/local/bin/oracle_gpu_kv_offload_baseline
+sudo chmod +x \
+  /home/tyb/workspace/SimCXL/local_mnt/usr/local/bin/oracle_gpu_kv_offload_baseline
+sync
+```
+
 Pure gem5 C++ or config-script changes do not require copying the guest binary
 again.
 
@@ -81,6 +96,21 @@ sudo build/X86/gem5.opt -d m5out/kv_nvm_seq64_kvm \
   --skip-smoke-tests \
   --kv-seq-len 64 \
   --kv-compute-latency-ns 500 \
+  --no-cpu-switch
+```
+
+Small KVM run that verifies the same KV baseline command reads full K/V from
+CXL-PCM, generates a deterministic K/V-size-derived output matrix inside
+OracleGPU, and writes it back to DDR:
+
+```bash
+sudo build/X86/gem5.opt -d m5out/kv_nvm_seq64_kv_size_pattern_kvm \
+  configs/example/gem5_library/x86-oracle-gpu-cxl-pcm-fs.py \
+  --cxl-pcm-backend from_nvm \
+  --skip-smoke-tests \
+  --kv-seq-len 64 \
+  --kv-compute-latency-ns 500 \
+  --kv-result-policy kv-size-pattern \
   --no-cpu-switch
 ```
 
@@ -124,6 +154,22 @@ Expected no-smoke values:
 
 For no-smoke runs, expected CXL-PCM writes are zero because the KV baseline
 places output in DDR.
+
+For `--kv-result-policy kv-size-pattern`, OracleGPU generates `output_bytes`
+inside the device from `K_bytes`, `V_bytes`, and `K_plus_V_bytes`, then writes
+that generated matrix to DDR. The guest independently regenerates the same
+expected bytes and verifies output with `memcmp`. This mode does not add any
+extra result-source DMA read, so for `seq_len = 64` the expected no-smoke
+OracleGPU DMA read bytes remain `264392`:
+
+- descriptor: `200`
+- Q: `2048`
+- K+V: `262144`
+
+Do not use `copy-oracle` for the precise KV output-flow baseline. That policy
+is still useful as a generic OracleGPU copy test, but it reads a guest-provided
+oracle result buffer before writing output, adding an extra result-source DMA
+read that is not part of the desired K/V-input plus generated-output flow.
 
 With the existing smoke tests enabled, add the OracleGPU CXL-PCM smoke command:
 
@@ -176,6 +222,28 @@ In KVM/atomic mode, timing-mode media counters such as
 Observed no-smoke run:
 
 - `OracleGPU KV offload baseline passed`
+- `result_policy = PATTERN_FILL`
+- `dmaReadBytes = 264392`
+- `dmaWriteBytes = 2052`
+- `bytesReadSys = 262144`
+- `bytesWrittenSys = 0`
+- `logicalPcmReadTransactions128B = 2048`
+- `logicalPcmWriteTransactions128B = 0`
+- `lastComputeLatencyTicks = 500000`
+- `lastComputeObservedTicks = 500000`
+
+Observed no-smoke generated-output run:
+
+- Output directory: `m5out/kv_nvm_seq64_kv_size_pattern_kvm`
+- `OracleGPU KV offload baseline passed`
+- `result_policy = KV_SIZE_PATTERN`
+- `generated_output_seed = 0x1b4d0842af332fb7`
+- `K_bytes = 131072`
+- `V_bytes = 131072`
+- `K_plus_V_bytes = 262144`
+- `expected_oracle_result_read_bytes_total = 0`
+- `runtime_dma_read_bytes = 264392`
+- `runtime_dma_write_bytes = 2052`
 - `dmaReadBytes = 264392`
 - `dmaWriteBytes = 2052`
 - `bytesReadSys = 262144`

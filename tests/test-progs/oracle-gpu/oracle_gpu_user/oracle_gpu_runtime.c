@@ -287,7 +287,8 @@ oracle_gpu_submit_generic(struct OracleGpuRuntime *rt,
                 "COPY_ORACLE requires oracle_result_phys_addr and matching size");
         }
     } else if (result_policy != ORACLE_GPU_RESULT_ZERO_FILL &&
-               result_policy != ORACLE_GPU_RESULT_PATTERN_FILL) {
+               result_policy != ORACLE_GPU_RESULT_PATTERN_FILL &&
+               result_policy != ORACLE_GPU_RESULT_KV_SIZE_PATTERN) {
         return oracle_gpu_fail(rt, EINVAL,
             "unsupported result_policy %u", result_policy);
     }

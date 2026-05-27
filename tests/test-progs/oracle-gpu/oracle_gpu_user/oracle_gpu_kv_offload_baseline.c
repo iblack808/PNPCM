@@ -38,6 +38,8 @@ struct BaselineConfig
     uint64_t q_phys;
     uint64_t output_phys;
     int output_phys_set;
+    uint64_t oracle_result_phys;
+    int oracle_result_phys_set;
     uint64_t cxl_base;
     uint64_t cxl_size;
     uint64_t cxl_offset;
@@ -75,6 +77,10 @@ usage(const char *prog)
         "(default %#llx)\n"
         "  --output-phys ADDR        DDR output buffer physical address "
         "(default follows Q buffer)\n"
+        "  --oracle-result-phys ADDR\n"
+        "                            DDR oracle result physical address for "
+        "copy-oracle\n"
+        "                            (default follows output buffer)\n"
         "  --cxl-base ADDR           CXL-PCM physical base "
         "(default %#llx)\n"
         "  --cxl-size BYTES          CXL-PCM range size "
@@ -92,7 +98,7 @@ usage(const char *prog)
         "  --dtype-bytes N           Element bytes (default %llu)\n"
         "  --compute-latency-ns N    OracleGPU compute latency per command "
         "(default %llu)\n"
-        "  --result-policy zero|pattern\n"
+        "  --result-policy zero|pattern|copy-oracle|kv-size-pattern\n"
         "                            Output policy (default pattern)\n"
         "  --poll-timeout-ms N       Runtime completion timeout "
         "(default %u)\n"
@@ -263,6 +269,79 @@ check_zero_fill(const uint8_t *buf, size_t bytes)
     return 0;
 }
 
+static uint64_t
+oracle_matrix_seed(uint64_t k_bytes, uint64_t v_bytes, uint64_t k_plus_v_bytes)
+{
+    uint64_t x = 0xcbf29ce484222325ULL;
+
+    x ^= k_bytes;
+    x *= 0x100000001b3ULL;
+    x ^= v_bytes;
+    x *= 0x100000001b3ULL;
+    x ^= k_plus_v_bytes;
+    x *= 0x100000001b3ULL;
+    return x;
+}
+
+static uint8_t
+oracle_matrix_byte(uint64_t seed, uint64_t index)
+{
+    uint64_t x = seed ^ (index * 0x9e3779b97f4a7c15ULL);
+
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return (uint8_t)x;
+}
+
+static void
+fill_oracle_matrix(uint8_t *buf, size_t bytes, uint64_t seed)
+{
+    size_t i;
+
+    for (i = 0; i < bytes; ++i) {
+        buf[i] = oracle_matrix_byte(seed, i);
+    }
+}
+
+static int
+check_expected_output(const uint8_t *output, const uint8_t *expected,
+                      size_t bytes)
+{
+    size_t i;
+
+    for (i = 0; i < bytes; ++i) {
+        if (output[i] != expected[i]) {
+            fprintf(stderr,
+                    "output mismatch at byte %zu: "
+                    "expected %#x got %#x\n",
+                    i, expected[i], output[i]);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static const char *
+result_policy_name(uint32_t result_policy)
+{
+    switch (result_policy) {
+      case ORACLE_GPU_RESULT_ZERO_FILL:
+        return "ZERO_FILL";
+      case ORACLE_GPU_RESULT_PATTERN_FILL:
+        return "PATTERN_FILL";
+      case ORACLE_GPU_RESULT_COPY_ORACLE:
+        return "COPY_ORACLE";
+      case ORACLE_GPU_RESULT_KV_SIZE_PATTERN:
+        return "KV_SIZE_PATTERN";
+      default:
+        return "UNKNOWN";
+    }
+}
+
 static void
 init_config(struct BaselineConfig *cfg)
 {
@@ -297,6 +376,7 @@ parse_args(int argc, char **argv, struct BaselineConfig *cfg)
         OPT_COMPLETION_PHYS,
         OPT_Q_PHYS,
         OPT_OUTPUT_PHYS,
+        OPT_ORACLE_RESULT_PHYS,
         OPT_CXL_BASE,
         OPT_CXL_SIZE,
         OPT_CXL_OFFSET,
@@ -318,6 +398,8 @@ parse_args(int argc, char **argv, struct BaselineConfig *cfg)
         {"completion-phys", required_argument, NULL, OPT_COMPLETION_PHYS},
         {"q-phys", required_argument, NULL, OPT_Q_PHYS},
         {"output-phys", required_argument, NULL, OPT_OUTPUT_PHYS},
+        {"oracle-result-phys", required_argument, NULL,
+         OPT_ORACLE_RESULT_PHYS},
         {"cxl-base", required_argument, NULL, OPT_CXL_BASE},
         {"cxl-size", required_argument, NULL, OPT_CXL_SIZE},
         {"cxl-offset", required_argument, NULL, OPT_CXL_OFFSET},
@@ -358,6 +440,11 @@ parse_args(int argc, char **argv, struct BaselineConfig *cfg)
             cfg->output_phys = parse_u64_arg("output-phys", optarg);
             cfg->output_phys_set = 1;
             break;
+          case OPT_ORACLE_RESULT_PHYS:
+            cfg->oracle_result_phys =
+                parse_u64_arg("oracle-result-phys", optarg);
+            cfg->oracle_result_phys_set = 1;
+            break;
           case OPT_CXL_BASE:
             cfg->cxl_base = parse_u64_arg("cxl-base", optarg);
             break;
@@ -397,6 +484,10 @@ parse_args(int argc, char **argv, struct BaselineConfig *cfg)
                 cfg->result_policy = ORACLE_GPU_RESULT_ZERO_FILL;
             } else if (strcmp(optarg, "pattern") == 0) {
                 cfg->result_policy = ORACLE_GPU_RESULT_PATTERN_FILL;
+            } else if (strcmp(optarg, "copy-oracle") == 0) {
+                cfg->result_policy = ORACLE_GPU_RESULT_COPY_ORACLE;
+            } else if (strcmp(optarg, "kv-size-pattern") == 0) {
+                cfg->result_policy = ORACLE_GPU_RESULT_KV_SIZE_PATTERN;
             } else {
                 fprintf(stderr, "invalid result-policy: %s\n", optarg);
                 exit(2);
@@ -461,26 +552,32 @@ main(int argc, char **argv)
     struct OracleGpuRuntimeConfig rt_cfg;
     struct OracleGpuMappedRegion q_region;
     struct OracleGpuMappedRegion output_region;
+    struct OracleGpuMappedRegion oracle_result_region;
     struct OracleGpuInput inputs[3];
     struct OracleGpuSubmitResult result;
+    uint8_t *expected_output;
     uint64_t q_bytes;
     uint64_t k_bytes;
     uint64_t v_bytes;
     uint64_t output_bytes;
+    uint64_t oracle_result_bytes;
     uint64_t q_map_bytes;
     uint64_t output_map_bytes;
+    uint64_t oracle_result_map_bytes;
     uint64_t k_map_bytes;
     uint64_t v_map_bytes;
     uint64_t kv_total_map_bytes;
     uint64_t k_phys;
     uint64_t v_phys;
     uint64_t output_end;
+    uint64_t oracle_result_end = 0;
     uint64_t command_count;
     uint64_t per_command_input_bytes;
     uint64_t total_q_read_bytes;
     uint64_t total_k_read_bytes;
     uint64_t total_v_read_bytes;
     uint64_t total_output_write_bytes;
+    uint64_t total_oracle_result_read_bytes;
     uint64_t total_payload_read_bytes;
     uint64_t expected_dma_read_with_desc;
     uint64_t expected_dma_write_with_completion;
@@ -489,19 +586,24 @@ main(int argc, char **argv)
     uint64_t expected_pcm_read_transactions;
     uint64_t expected_pcm_write_transactions;
     uint64_t k_plus_v_bytes;
+    uint64_t oracle_seed;
     uint64_t command_idx;
     int rc = 1;
 
     init_config(&cfg);
     parse_args(argc, argv, &cfg);
+    expected_output = NULL;
 
     if (compute_buffer_sizes(&cfg, &q_bytes, &k_bytes, &v_bytes,
                              &output_bytes) != 0) {
         return 2;
     }
+    oracle_result_bytes = output_bytes;
 
     if (checked_align_up_u64(q_bytes, 4096, &q_map_bytes) != 0 ||
         checked_align_up_u64(output_bytes, 4096, &output_map_bytes) != 0 ||
+        checked_align_up_u64(oracle_result_bytes, 4096,
+                             &oracle_result_map_bytes) != 0 ||
         checked_align_up_u64(k_bytes, PCM_MEDIA_GRANULARITY_BYTES,
                              &k_map_bytes) != 0 ||
         checked_align_up_u64(v_bytes, PCM_MEDIA_GRANULARITY_BYTES,
@@ -526,6 +628,22 @@ main(int argc, char **argv)
 
     if (checked_add_u64(cfg.output_phys, output_map_bytes, &output_end) != 0) {
         fprintf(stderr, "output physical range overflowed\n");
+        return 2;
+    }
+    if (cfg.result_policy == ORACLE_GPU_RESULT_COPY_ORACLE &&
+        !cfg.oracle_result_phys_set) {
+        cfg.oracle_result_phys = output_end;
+        if (checked_align_up_u64(cfg.oracle_result_phys, 4096,
+                                 &cfg.oracle_result_phys) != 0) {
+            fprintf(stderr, "default oracle result physical alignment "
+                    "overflowed\n");
+            return 2;
+        }
+    }
+    if (cfg.result_policy == ORACLE_GPU_RESULT_COPY_ORACLE &&
+        checked_add_u64(cfg.oracle_result_phys, oracle_result_map_bytes,
+                        &oracle_result_end) != 0) {
+        fprintf(stderr, "oracle result physical range overflowed\n");
         return 2;
     }
 
@@ -563,11 +681,18 @@ main(int argc, char **argv)
         checked_mul_u64(v_bytes, command_count, &total_v_read_bytes) != 0 ||
         checked_mul_u64(output_bytes, command_count,
                         &total_output_write_bytes) != 0 ||
+        checked_mul_u64(
+            cfg.result_policy == ORACLE_GPU_RESULT_COPY_ORACLE ?
+            oracle_result_bytes : 0,
+            command_count, &total_oracle_result_read_bytes) != 0 ||
         checked_mul_u64(per_command_input_bytes, command_count,
                         &total_payload_read_bytes) != 0 ||
         checked_mul_u64(sizeof(struct OracleGPUCommand), command_count,
                         &expected_dma_read_with_desc) != 0 ||
         checked_add_u64(expected_dma_read_with_desc, total_payload_read_bytes,
+                        &expected_dma_read_with_desc) != 0 ||
+        checked_add_u64(expected_dma_read_with_desc,
+                        total_oracle_result_read_bytes,
                         &expected_dma_read_with_desc) != 0 ||
         checked_mul_u64(sizeof(uint32_t), command_count,
                         &expected_dma_write_with_completion) != 0 ||
@@ -605,6 +730,7 @@ main(int argc, char **argv)
     memset(&rt_cfg, 0, sizeof(rt_cfg));
     memset(&q_region, 0, sizeof(q_region));
     memset(&output_region, 0, sizeof(output_region));
+    memset(&oracle_result_region, 0, sizeof(oracle_result_region));
     memset(&result, 0, sizeof(result));
 
     rt_cfg.mmio_phys_base = cfg.mmio_base;
@@ -631,6 +757,15 @@ main(int argc, char **argv)
                 oracle_gpu_last_error(&rt));
         goto cleanup;
     }
+    if (cfg.result_policy == ORACLE_GPU_RESULT_COPY_ORACLE &&
+        oracle_gpu_map_region(&rt, cfg.oracle_result_phys,
+                              checked_size(oracle_result_map_bytes,
+                                           "oracle result map bytes"),
+                              &oracle_result_region) != 0) {
+        fprintf(stderr, "oracle_gpu_map_region failed: %s\n",
+                oracle_gpu_last_error(&rt));
+        goto cleanup;
+    }
 
     if (!range_contains(cfg.cxl_base, cfg.cxl_size, k_phys,
                         kv_total_map_bytes)) {
@@ -646,6 +781,23 @@ main(int argc, char **argv)
                 0x41);
     memset(output_region.ptr, 0xcc, checked_size(output_bytes,
                                                 "output bytes"));
+    oracle_seed = oracle_matrix_seed(k_bytes, v_bytes, k_plus_v_bytes);
+    if (cfg.result_policy == ORACLE_GPU_RESULT_COPY_ORACLE) {
+        fill_oracle_matrix((uint8_t *)oracle_result_region.ptr,
+                           checked_size(oracle_result_bytes,
+                                        "oracle result bytes"),
+                           oracle_seed);
+    }
+    if (cfg.result_policy == ORACLE_GPU_RESULT_KV_SIZE_PATTERN) {
+        expected_output = malloc(checked_size(output_bytes, "output bytes"));
+        if (expected_output == NULL) {
+            fprintf(stderr, "malloc(expected output) failed\n");
+            goto cleanup;
+        }
+        fill_oracle_matrix(expected_output,
+                           checked_size(output_bytes, "output bytes"),
+                           oracle_seed);
+    }
 
     inputs[0].phys_addr = q_region.phys_addr;
     inputs[0].bytes = q_bytes;
@@ -656,7 +808,13 @@ main(int argc, char **argv)
 
     for (command_idx = 0; command_idx < command_count; ++command_idx) {
         if (oracle_gpu_submit_generic(&rt, inputs, 3, output_region.phys_addr,
-                                      output_bytes, cfg.result_policy, 0, 0,
+                                      output_bytes, cfg.result_policy,
+                                      cfg.result_policy ==
+                                      ORACLE_GPU_RESULT_COPY_ORACLE ?
+                                      oracle_result_region.phys_addr : 0,
+                                      cfg.result_policy ==
+                                      ORACLE_GPU_RESULT_COPY_ORACLE ?
+                                      oracle_result_bytes : 0,
                                       cfg.compute_latency_ns,
                                       0x4b564f46464c4400ULL | command_idx,
                                       &result) != 0) {
@@ -677,6 +835,20 @@ main(int argc, char **argv)
                         checked_size(output_bytes, "output bytes")) != 0) {
         goto cleanup;
     }
+    if (cfg.result_policy == ORACLE_GPU_RESULT_COPY_ORACLE &&
+        check_expected_output(
+            (const uint8_t *)output_region.ptr,
+            (const uint8_t *)oracle_result_region.ptr,
+            checked_size(output_bytes, "output bytes")) != 0) {
+        goto cleanup;
+    }
+    if (cfg.result_policy == ORACLE_GPU_RESULT_KV_SIZE_PATTERN &&
+        check_expected_output(
+            (const uint8_t *)output_region.ptr,
+            expected_output,
+            checked_size(output_bytes, "output bytes")) != 0) {
+        goto cleanup;
+    }
 
     printf("oracle_gpu_kv_offload_baseline\n");
     printf("batch_size: %" PRIu64 "\n", cfg.batch_size);
@@ -687,9 +859,7 @@ main(int argc, char **argv)
     printf("head_dim: %" PRIu64 "\n", cfg.head_dim);
     printf("dtype_bytes: %" PRIu64 "\n", cfg.dtype_bytes);
     printf("compute_latency_ns: %" PRIu64 "\n", cfg.compute_latency_ns);
-    printf("result_policy: %s\n",
-           cfg.result_policy == ORACLE_GPU_RESULT_ZERO_FILL ?
-           "ZERO_FILL" : "PATTERN_FILL");
+    printf("result_policy: %s\n", result_policy_name(cfg.result_policy));
     printf("command_count: %" PRIu64 "\n", command_count);
     printf("cxl_pcm_base: %#" PRIx64 "\n", cfg.cxl_base);
     printf("cxl_pcm_size: %#" PRIx64 "\n", cfg.cxl_size);
@@ -697,6 +867,15 @@ main(int argc, char **argv)
     printf("k_cache_phys: %#" PRIx64 "\n", k_phys);
     printf("v_cache_phys: %#" PRIx64 "\n", v_phys);
     printf("output_phys: %#" PRIx64 "\n", output_region.phys_addr);
+    if (cfg.result_policy == ORACLE_GPU_RESULT_COPY_ORACLE) {
+        printf("oracle_result_phys: %#" PRIx64 "\n",
+               oracle_result_region.phys_addr);
+        printf("oracle_result_bytes: %" PRIu64 "\n", oracle_result_bytes);
+        printf("oracle_result_seed: %#" PRIx64 "\n", oracle_seed);
+    }
+    if (cfg.result_policy == ORACLE_GPU_RESULT_KV_SIZE_PATTERN) {
+        printf("generated_output_seed: %#" PRIx64 "\n", oracle_seed);
+    }
     printf("k_cache_in_cxl_pcm: %s\n",
            range_contains(cfg.cxl_base, cfg.cxl_size, k_phys,
                           k_bytes) ? "yes" : "no");
@@ -716,6 +895,8 @@ main(int argc, char **argv)
            total_v_read_bytes);
     printf("expected_payload_dma_read_bytes: %" PRIu64 "\n",
            total_payload_read_bytes);
+    printf("expected_oracle_result_read_bytes_total: %" PRIu64 "\n",
+           total_oracle_result_read_bytes);
     printf("expected_oraclegpu_dma_read_bytes_including_descriptors: %"
            PRIu64 "\n", expected_dma_read_with_desc);
     printf("expected_output_write_bytes_total: %" PRIu64 "\n",
@@ -740,9 +921,12 @@ main(int argc, char **argv)
     rc = 0;
 
 cleanup:
+    free(expected_output);
+    oracle_gpu_unmap_region(&oracle_result_region);
     oracle_gpu_unmap_region(&output_region);
     oracle_gpu_unmap_region(&q_region);
     oracle_gpu_close(&rt);
     (void)output_end;
+    (void)oracle_result_end;
     return rc;
 }

@@ -109,11 +109,11 @@ segments:
 - output: attention-output-shaped buffer in DDR scratch memory
 
 K/V are physical segments inside the configured CXL-PCM range. The driver does
-not initialize their payload from the CPU because OracleGPU ignores input
-contents for `ZERO_FILL` and `PATTERN_FILL`; the K/V addresses exist only to
-generate OracleGPU DMA reads against CXL-PCM. The driver checks that the
-physical K/V ranges fit inside `--cxl-base` and `--cxl-size` before submitting
-the command.
+not initialize their payload from the CPU for `ZERO_FILL`, `PATTERN_FILL`,
+`COPY_ORACLE`, or `KV_SIZE_PATTERN`; the K/V addresses exist to generate
+OracleGPU DMA reads against CXL-PCM. The driver checks that the physical K/V
+ranges fit inside
+`--cxl-base` and `--cxl-size` before submitting the command.
 
 Default CXL-PCM range:
 
@@ -135,6 +135,13 @@ arguments:
   --result-policy pattern
 ```
 
+To verify that a single KV baseline command reads the full K/V payload and
+writes back a specified matrix generated inside OracleGPU, use
+`--result-policy kv-size-pattern`. OracleGPU fills the output matrix with a
+deterministic byte pattern derived from `K_bytes`, `V_bytes`, and
+`K_plus_V_bytes`, then writes it to DDR scratch memory. The guest independently
+regenerates the expected bytes and verifies the output with `memcmp`.
+
 For the default shape, the driver prints:
 
 - `K_bytes = 16777216`
@@ -150,6 +157,7 @@ The driver also prints total expected traffic across
 - `expected_K_read_bytes_total`
 - `expected_V_read_bytes_total`
 - `expected_payload_dma_read_bytes`
+- `expected_oracle_result_read_bytes_total`
 - `expected_oraclegpu_dma_read_bytes_including_descriptors`
 - `expected_output_write_bytes_total`
 - `expected_oraclegpu_dma_write_bytes_including_completion`

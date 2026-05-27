@@ -14,6 +14,51 @@
 namespace gem5
 {
 
+namespace
+{
+
+uint64_t
+kvSizePatternSeed(const OracleGPUCommand &cmd)
+{
+    const uint64_t k_bytes = cmd.inputs[1].bytes;
+    const uint64_t v_bytes = cmd.inputs[2].bytes;
+    const uint64_t k_plus_v_bytes = k_bytes + v_bytes;
+    uint64_t x = 0xcbf29ce484222325ULL;
+
+    x ^= k_bytes;
+    x *= 0x100000001b3ULL;
+    x ^= v_bytes;
+    x *= 0x100000001b3ULL;
+    x ^= k_plus_v_bytes;
+    x *= 0x100000001b3ULL;
+    return x;
+}
+
+uint8_t
+kvSizePatternByte(uint64_t seed, uint64_t index)
+{
+    uint64_t x = seed ^ (index * 0x9e3779b97f4a7c15ULL);
+
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return static_cast<uint8_t>(x);
+}
+
+void
+fillKvSizePattern(const OracleGPUCommand &cmd, std::vector<uint8_t> &out)
+{
+    const uint64_t seed = kvSizePatternSeed(cmd);
+
+    for (uint64_t i = 0; i < out.size(); ++i) {
+        out[i] = kvSizePatternByte(seed, i);
+    }
+}
+
+} // anonymous namespace
+
 OracleGPU::OracleGPUStats::OracleGPUStats(statistics::Group *parent)
     : statistics::Group(parent),
       ADD_STAT(commandCount, statistics::units::Count::get(),
@@ -339,6 +384,10 @@ OracleGPU::finishCompute()
                   ORACLE_GPU_PATTERN_BYTE);
         startResultWrite();
         break;
+      case ORACLE_GPU_RESULT_KV_SIZE_PATTERN:
+        fillKvSizePattern(activeCmd, outputBuffer);
+        startResultWrite();
+        break;
       case ORACLE_GPU_RESULT_COPY_ORACLE:
         dmaRead(activeCmd.oracle_result_addr, activeCmd.oracle_result_bytes,
                 &oracleResultReadDoneEvent, outputBuffer.data(), 0);
@@ -445,6 +494,12 @@ OracleGPU::validateCommand()
     switch (activeCmd.result_policy) {
       case ORACLE_GPU_RESULT_ZERO_FILL:
       case ORACLE_GPU_RESULT_PATTERN_FILL:
+        break;
+      case ORACLE_GPU_RESULT_KV_SIZE_PATTERN:
+        if (activeCmd.num_inputs < 3) {
+            setError("KV_SIZE_PATTERN requires Q/K/V input segments");
+            return false;
+        }
         break;
       case ORACLE_GPU_RESULT_COPY_ORACLE:
         if (activeCmd.oracle_result_addr == 0 ||

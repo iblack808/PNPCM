@@ -1,7 +1,8 @@
-from pathlib import Path
 import argparse
+from pathlib import Path
 
 import m5
+
 import gem5.components.boards as gem5_boards_pkg
 from gem5.components.cachehierarchies.classic.private_l1_private_l2_shared_l3_cache_hierarchy import (
     PrivateL1PrivateL2SharedL3CacheHierarchy,
@@ -9,16 +10,17 @@ from gem5.components.cachehierarchies.classic.private_l1_private_l2_shared_l3_ca
 from gem5.components.memory.cxl_pcm_from_dram import (
     SingleChannelCXLPCMFromDRAM,
 )
-from gem5.components.memory.cxl_pcm_from_nvm import (
-    SingleChannelCXLPCMFromNVM,
-)
+from gem5.components.memory.cxl_pcm_from_nvm import SingleChannelCXLPCMFromNVM
 from gem5.components.memory.single_channel import SingleChannelDDR4_2400
 from gem5.components.processors.cpu_types import CPUTypes
 from gem5.components.processors.simple_switchable_processor import (
     SimpleSwitchableProcessor,
 )
 from gem5.isas import ISA
-from gem5.resources.resource import DiskImageResource, KernelResource
+from gem5.resources.resource import (
+    DiskImageResource,
+    KernelResource,
+)
 from gem5.simulate.exit_event import ExitEvent
 from gem5.simulate.simulator import Simulator
 from gem5.utils.requires import requires
@@ -48,23 +50,45 @@ if str(BOARDS_SRC_PATH) not in gem5_boards_pkg.__path__:
 
 from gem5.components.boards.x86_board_oracle_gpu import X86BoardOracleGPU
 
-
 parser = argparse.ArgumentParser(
     description="Run x86 FS with DDR, OracleGPU, and CXL-PCM memory."
 )
-parser.add_argument("--cxl-pcm-backend", choices=["from_dram", "from_nvm"],
-                    default="from_dram")
-parser.add_argument("--skip-smoke-tests", action="store_true",
-                    help="Skip the existing CXL-PCM CPU and OracleGPU smoke tests.")
-parser.add_argument("--skip-kv-baseline", action="store_true",
-                    help="Skip the guest-side OracleGPU KV offload baseline.")
-parser.add_argument("--kv-seq-len", type=int, default=KV_BASELINE_SEQ_LEN,
-                    help="Sequence length for oracle_gpu_kv_offload_baseline.")
-parser.add_argument("--kv-compute-latency-ns", type=int,
-                    default=KV_BASELINE_COMPUTE_LATENCY_NS,
-                    help="OracleGPU compute latency per KV baseline command.")
-parser.add_argument("--no-cpu-switch", action="store_true",
-                    help="Do not switch from KVM to timing CPU before tests.")
+parser.add_argument(
+    "--cxl-pcm-backend", choices=["from_dram", "from_nvm"], default="from_dram"
+)
+parser.add_argument(
+    "--skip-smoke-tests",
+    action="store_true",
+    help="Skip the existing CXL-PCM CPU and OracleGPU smoke tests.",
+)
+parser.add_argument(
+    "--skip-kv-baseline",
+    action="store_true",
+    help="Skip the guest-side OracleGPU KV offload baseline.",
+)
+parser.add_argument(
+    "--kv-seq-len",
+    type=int,
+    default=KV_BASELINE_SEQ_LEN,
+    help="Sequence length for oracle_gpu_kv_offload_baseline.",
+)
+parser.add_argument(
+    "--kv-compute-latency-ns",
+    type=int,
+    default=KV_BASELINE_COMPUTE_LATENCY_NS,
+    help="OracleGPU compute latency per KV baseline command.",
+)
+parser.add_argument(
+    "--kv-result-policy",
+    choices=["zero", "pattern", "copy-oracle", "kv-size-pattern"],
+    default="pattern",
+    help="Result policy for oracle_gpu_kv_offload_baseline.",
+)
+parser.add_argument(
+    "--no-cpu-switch",
+    action="store_true",
+    help="Do not switch from KVM to timing CPU before tests.",
+)
 args = parser.parse_args()
 
 DETAILED_CPU_TYPE = CPUTypes.TIMING
@@ -110,7 +134,7 @@ echo "[gem5-readfile] running OracleGPU KV offload baseline"
   --head-dim {KV_BASELINE_HEAD_DIM} \\
   --dtype-bytes {KV_BASELINE_DTYPE_BYTES} \\
   --compute-latency-ns {args.kv_compute_latency_ns} \\
-  --result-policy pattern
+  --result-policy {args.kv_result_policy}
 echo "[gem5-readfile] OracleGPU KV offload baseline finished"
 {flush_console_cmd()}
 """

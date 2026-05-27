@@ -1,6 +1,6 @@
 # OracleGPU and CXL-PCM Status
 
-Last updated: 2026-05-26
+Last updated: 2026-05-27
 
 This document records the current SimCXL OracleGPU and CXL-PCM state. It is
 intended for a future Codex agent or engineer to continue without re-discovering
@@ -13,6 +13,10 @@ Current status:
 - A guest-side KV offload baseline driver exists for the first LLM-like system
   baseline. The current validated path is `from_nvm` plus KVM
   `--no-cpu-switch`.
+- The KV baseline now has a validated `kv-size-pattern` result mode: the same
+  OracleGPU command reads full Q/K/V input traffic, generates a deterministic
+  K/V-size-derived output matrix inside OracleGPU, and DMA-writes the output to
+  DDR without an extra result-source DMA read.
 - CXL-PCM exists in two selectable backend variants:
   - `CXL-PCM_from_dram`: custom DRAM-path-derived memory object.
   - `CXL-PCM_from_nvm`: CXL-PCM-specific NVMInterface/MemCtrl-derived backend.
@@ -37,6 +41,9 @@ Current accepted baseline:
   OracleGPU DMA stats and CXL-PCM per-requestor stats.
 - The KV baseline places K/V cache segments in CXL-PCM, Q/output in DDR, and
   submits only OracleGPU generic commands through the guest runtime shim.
+- The accepted single-command output-flow validation is
+  `--kv-result-policy kv-size-pattern` with the `from_nvm` KVM
+  `--no-cpu-switch` path.
 - `from_dram` and `from_nvm` are selected only by
   `--cxl-pcm-backend from_dram|from_nvm`.
 
@@ -66,6 +73,11 @@ The current implementation generalizes it into a generic operation proxy:
 OracleGPU does not understand any model semantics. Input buffers are used to
 generate memory-system traffic. For `ZERO_FILL` and `PATTERN_FILL`, input
 payload content is ignored after DMA traffic is generated.
+`KV_SIZE_PATTERN` also ignores input payload content, but generates a
+deterministic output matrix inside OracleGPU from the K/V input byte sizes.
+`COPY_ORACLE` remains available as a generic copy-like policy, but it reads a
+guest-provided oracle result buffer and is not the preferred KV output-flow
+validation mode.
 
 Main files:
 
@@ -111,6 +123,7 @@ Current protocol constants:
 - `ORACLE_GPU_RESULT_ZERO_FILL = 1`
 - `ORACLE_GPU_RESULT_PATTERN_FILL = 2`
 - `ORACLE_GPU_RESULT_COPY_ORACLE = 3`
+- `ORACLE_GPU_RESULT_KV_SIZE_PATTERN = 4`
 - `ORACLE_GPU_PATTERN_BYTE = 0xa5`
 
 ### OracleGPU Stats and MMIO Counters
@@ -214,6 +227,35 @@ Current limitation:
   tensors yet.
 - Future framework integration needs a controlled physical allocator, kernel
   driver, or explicit virtual-to-physical strategy.
+
+Current KV output-flow validation:
+
+- Use `ORACLE_GPU_RESULT_KV_SIZE_PATTERN` through the KV baseline
+  `--result-policy kv-size-pattern` option.
+- The guest submits Q/K/V as input segments, with K/V in CXL-PCM.
+- OracleGPU reads all input segments, waits for `compute_latency_ns`, generates
+  `output_bytes` internally from `K_bytes`, `V_bytes`, and `K_plus_V_bytes`,
+  then DMA-writes the generated output to DDR.
+- The guest independently regenerates the expected byte pattern and verifies
+  the DDR output buffer with `memcmp`.
+- This mode intentionally does not read an oracle-result buffer, so OracleGPU
+  DMA read bytes remain descriptor plus Q/K/V payload bytes.
+
+Validated `seq_len = 64` no-smoke `from_nvm` KVM run:
+
+- Output directory: `m5out/kv_nvm_seq64_kv_size_pattern_kvm`
+- `result_policy = KV_SIZE_PATTERN`
+- `K_bytes = 131072`
+- `V_bytes = 131072`
+- `K_plus_V_bytes = 262144`
+- `expected_oracle_result_read_bytes_total = 0`
+- `runtime_dma_read_bytes = 264392`
+- `runtime_dma_write_bytes = 2052`
+- `bytesReadSys = 262144`
+- `bytesWrittenSys = 0`
+- `logicalPcmReadTransactions128B = 2048`
+- `logicalPcmWriteTransactions128B = 0`
+- `OracleGPU KV offload baseline passed`
 
 Runtime install command, assuming the guest root filesystem is mounted at
 `local_mnt/`:
